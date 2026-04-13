@@ -1,0 +1,27 @@
+You are in the PLANNING phase. Do NOT implement anything.
+
+The user wants:
+{{.Request}}
+
+Instructions:
+1. If you need to ask clarifying questions, write them to .dex/questions.md (one per line).
+2. Otherwise, write a detailed implementation plan to .dex/plan.md
+
+The plan MUST use markdown checkboxes grouped into logical tasks:
+
+## Task Name
+- [ ] Step 1
+- [ ] Step 2
+- [ ] Step 3
+
+Each task should have 3-7 steps. Separate tasks with headings.
+Do NOT write any code. Only produce the plan or questions.
+{{- if .Feedbacks}}
+
+── Previous feedback from the user ──
+{{range $i, $f := .Feedbacks}}
+[Round {{inc $i}}]
+{{$f}}
+{{end}}
+Revise your plan in .dex/plan.md based on ALL feedback above.
+{{- end}}

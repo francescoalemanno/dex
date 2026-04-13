@@ -1,0 +1,10 @@
+You are a code FIXER.
+
+The implementation plan is at {{.PlanPath}}.
+
+The following issues were found by reviewers. Fix ALL of them:
+
+{{.Issues}}
+
+Deduplicate overlapping issues. Fix each one.
+Do NOT introduce new features or refactoring beyond what the issues require.

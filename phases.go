@@ -1,17 +1,44 @@
 package main
 
 import (
+	"bytes"
+	"embed"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"text/template"
 )
+
+//go:embed prompts/*.txt
+var promptFS embed.FS
+
+var prompts = template.Must(
+	template.New("").
+		Funcs(template.FuncMap{"inc": func(i int) int { return i + 1 }}).
+		ParseFS(promptFS, "prompts/*.txt"),
+)
+
+func renderPrompt(name string, data any) string {
+	var buf bytes.Buffer
+	if err := prompts.ExecuteTemplate(&buf, name, data); err != nil {
+		panic(fmt.Sprintf("template %q: %v", name, err))
+	}
+	return buf.String()
+}
 
 const dexDir = ".dex"
 
 func ensureDexDir() error {
-	return os.MkdirAll(dexDir, 0o755)
+	if err := os.MkdirAll(dexDir, 0o755); err != nil {
+		return err
+	}
+	gitignore := filepath.Join(dexDir, ".gitignore")
+	if _, err := os.Stat(gitignore); os.IsNotExist(err) {
+		return os.WriteFile(gitignore, []byte("*\n"), 0o644)
+	}
+	return nil
 }
 
 func dexPath(name string) string {
@@ -47,13 +74,13 @@ func PlanPhase(r *Runner, request string) (string, error) {
 	for iteration := 1; ; iteration++ {
 		info(fmt.Sprintf("Planning iteration %d", iteration))
 
-		// clean transient files
 		removeDexFile("questions.md")
 
-		// build prompt
-		p := buildPlanPrompt(request, feedbacks)
+		p := renderPrompt("plan.txt", map[string]any{
+			"Request":   request,
+			"Feedbacks": feedbacks,
+		})
 
-		// run CLI
 		if err := r.Run(p); err != nil {
 			errMsg(fmt.Sprintf("CLI error: %v", err))
 			choice := promptChoice("Retry or abort?", []string{"retry", "abort"})
@@ -63,7 +90,6 @@ func PlanPhase(r *Runner, request string) (string, error) {
 			continue
 		}
 
-		// check for questions
 		questions, _ := readDexFile("questions.md")
 		if questions != "" {
 			showBlock("Questions from CLI", questions)
@@ -72,7 +98,6 @@ func PlanPhase(r *Runner, request string) (string, error) {
 			continue
 		}
 
-		// check for plan
 		plan, err := readDexFile("plan.md")
 		if err != nil {
 			return "", err
@@ -100,34 +125,6 @@ func PlanPhase(r *Runner, request string) (string, error) {
 	}
 }
 
-func buildPlanPrompt(request string, feedbacks []string) string {
-	var sb strings.Builder
-	sb.WriteString("You are in the PLANNING phase. Do NOT implement anything.\n\n")
-	sb.WriteString("The user wants:\n")
-	sb.WriteString(request)
-	sb.WriteString("\n\n")
-	sb.WriteString("Instructions:\n")
-	sb.WriteString("1. If you need to ask clarifying questions, write them to .dex/questions.md (one per line).\n")
-	sb.WriteString("2. Otherwise, write a detailed implementation plan to .dex/plan.md\n\n")
-	sb.WriteString("The plan MUST use markdown checkboxes grouped into logical tasks:\n\n")
-	sb.WriteString("## Task Name\n")
-	sb.WriteString("- [ ] Step 1\n")
-	sb.WriteString("- [ ] Step 2\n")
-	sb.WriteString("- [ ] Step 3\n\n")
-	sb.WriteString("Each task should have 3-7 steps. Separate tasks with headings.\n")
-	sb.WriteString("Do NOT write any code. Only produce the plan or questions.\n")
-
-	if len(feedbacks) > 0 {
-		sb.WriteString("\n── Previous feedback from the user ──\n")
-		for i, f := range feedbacks {
-			sb.WriteString(fmt.Sprintf("\n[Round %d]\n%s\n", i+1, f))
-		}
-		sb.WriteString("\nRevise your plan in .dex/plan.md based on ALL feedback above.\n")
-	}
-
-	return sb.String()
-}
-
 // ── Phase 2: Implementation ──
 
 func ImplPhase(r *Runner, planPath string) error {
@@ -150,7 +147,11 @@ func ImplPhase(r *Runner, planPath string) error {
 		info(fmt.Sprintf("Iteration %d — working on: %s (%d/%d steps open)",
 			iteration, header, task.Open, task.Open+task.Done))
 
-		p := buildImplPrompt(planPath, task)
+		p := renderPrompt("impl.txt", map[string]any{
+			"PlanPath":   planPath,
+			"TaskHeader": task.Header,
+			"TaskBody":   task.String(),
+		})
 
 		if err := r.Run(p); err != nil {
 			errMsg(fmt.Sprintf("CLI error: %v", err))
@@ -161,7 +162,6 @@ func ImplPhase(r *Runner, planPath string) error {
 			continue
 		}
 
-		// verify progress
 		done, err := AllTasksDone(planPath)
 		if err != nil {
 			return err
@@ -171,21 +171,6 @@ func ImplPhase(r *Runner, planPath string) error {
 			return nil
 		}
 	}
-}
-
-func buildImplPrompt(planPath string, task *TaskGroup) string {
-	var sb strings.Builder
-	sb.WriteString("You are in the IMPLEMENTATION phase.\n\n")
-	sb.WriteString(fmt.Sprintf("Read the full plan at %s.\n\n", planPath))
-	sb.WriteString("Execute ONLY the following task (the first open task group):\n\n")
-	if task.Header != "" {
-		sb.WriteString(task.Header + "\n")
-	}
-	sb.WriteString(task.String())
-	sb.WriteString("\n\n")
-	sb.WriteString(fmt.Sprintf("After completing each step, update %s and mark the step as \"- [x]\".\n", planPath))
-	sb.WriteString("Do NOT work on any other task. Stop after this task group is done.\n")
-	return sb.String()
 }
 
 // ── Phase 3: Review ──
@@ -222,32 +207,33 @@ func ReviewPhase(r *Runner, planPath string) error {
 	for round := 1; ; round++ {
 		info(fmt.Sprintf("Review round %d — running %d reviewers in parallel", round, len(defaultReviewers)))
 
-		// clean old reviews
 		for _, rv := range defaultReviewers {
 			removeDexFile(fmt.Sprintf("review-%s.md", rv.Name))
 		}
 
-		// run reviewers in parallel
 		var wg sync.WaitGroup
 		errs := make([]error, len(defaultReviewers))
 		for i, rv := range defaultReviewers {
 			wg.Add(1)
 			go func(idx int, role ReviewRole) {
 				defer wg.Done()
-				p := buildReviewPrompt(planPath, role)
+				p := renderPrompt("review.txt", map[string]any{
+					"PlanPath":   planPath,
+					"RoleName":   role.Name,
+					"RolePrompt": role.Prompt,
+					"ReviewPath": dexPath(fmt.Sprintf("review-%s.md", role.Name)),
+				})
 				errs[idx] = r.Run(p)
 			}(i, rv)
 		}
 		wg.Wait()
 
-		// check for CLI errors
 		for i, err := range errs {
 			if err != nil {
 				errMsg(fmt.Sprintf("Reviewer %q failed: %v", defaultReviewers[i].Name, err))
 			}
 		}
 
-		// collect reviews
 		allClean := true
 		var issues []string
 		for _, rv := range defaultReviewers {
@@ -271,7 +257,10 @@ func ReviewPhase(r *Runner, planPath string) error {
 
 		info("Issues found — running fixer...")
 
-		fixPrompt := buildFixPrompt(planPath, issues)
+		fixPrompt := renderPrompt("fix.txt", map[string]any{
+			"PlanPath": planPath,
+			"Issues":   strings.Join(issues, "\n\n"),
+		})
 		if err := r.Run(fixPrompt); err != nil {
 			errMsg(fmt.Sprintf("Fixer error: %v", err))
 			choice := promptChoice("Retry round or abort?", []string{"retry", "abort"})
@@ -280,31 +269,6 @@ func ReviewPhase(r *Runner, planPath string) error {
 			}
 		}
 	}
-}
-
-func buildReviewPrompt(planPath string, role ReviewRole) string {
-	var sb strings.Builder
-	sb.WriteString("You are a code REVIEWER.\n\n")
-	sb.WriteString(fmt.Sprintf("The implementation plan is at %s. Read it to understand what was built.\n\n", planPath))
-	sb.WriteString(fmt.Sprintf("Your role: %s\n\n", role.Name))
-	sb.WriteString(role.Prompt)
-	sb.WriteString("\n\n")
-	sb.WriteString(fmt.Sprintf("Write your review to %s\n\n", dexPath(fmt.Sprintf("review-%s.md", role.Name))))
-	sb.WriteString("If you find NO issues at all, write exactly: ZERO ISSUES\n")
-	sb.WriteString("Otherwise, list each issue with file path and description.\n")
-	sb.WriteString("Do NOT fix anything. Only review.\n")
-	return sb.String()
-}
-
-func buildFixPrompt(planPath string, issues []string) string {
-	var sb strings.Builder
-	sb.WriteString("You are a code FIXER.\n\n")
-	sb.WriteString(fmt.Sprintf("The implementation plan is at %s.\n\n", planPath))
-	sb.WriteString("The following issues were found by reviewers. Fix ALL of them:\n\n")
-	sb.WriteString(strings.Join(issues, "\n\n"))
-	sb.WriteString("\n\nDeduplicate overlapping issues. Fix each one.\n")
-	sb.WriteString("Do NOT introduce new features or refactoring beyond what the issues require.\n")
-	return sb.String()
 }
 
 func isCleanReview(review string) bool {
