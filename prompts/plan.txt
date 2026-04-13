@@ -3,19 +3,118 @@ You are in the PLANNING phase. Do NOT implement anything.
 The user wants:
 {{.Request}}
 
-Instructions:
-1. If you need to ask clarifying questions, write them to .dex/questions.md (one per line).
-2. Otherwise, write a detailed implementation plan to .dex/plan.md
+## Step 0: Check for Existing State
 
-The plan MUST use markdown checkboxes grouped into logical tasks:
+Before doing ANY exploration or asking ANY question:
+1. If .dex/plan.md exists, read it in full — it is the current working draft.
+2. Read the feedback section at the bottom of this prompt (if present) — it is the canonical planning-state input for this iteration.
 
-## Task Name
-- [ ] Step 1
-- [ ] Step 2
-- [ ] Step 3
+If a current draft and feedback exist, you MUST account for them before doing anything else.
+Do not discard an existing draft and start over unless the feedback genuinely requires a full rewrite.
 
-Each task should have 3-7 steps. Separate tasks with headings.
-Do NOT write any code. Only produce the plan or questions.
+## Step 1: Explore the Codebase
+
+If this is the first iteration or you have not yet explored:
+- inspect the relevant code
+- identify the files, patterns, and constraints that matter
+- decide what you can determine yourself without asking
+
+## Step 2: Ask Clarifying Questions Only When Needed
+
+If you genuinely need user input to create a good plan, write your questions to .dex/questions.md using this exact format (one per line):
+
+Q: Your question here? [Option 1 | Option 2 | Option 3]
+
+Rules for questions:
+- ask ONE question at a time (one Q: line)
+- provide 2-4 concrete options in brackets
+- do NOT include catch-all options like "Other" or "Something else"
+- only ask about architecture, scope, or user preferences you cannot infer safely
+- do NOT ask about implementation details you can choose yourself
+- if a draft already exists, ask only the minimum question needed to refine it
+
+After writing .dex/questions.md, STOP immediately. Do not continue planning.
+
+## Step 3: Write the Plan
+
+When you have enough information to create a good plan:
+- if .dex/plan.md already exists, revise it in place — do not recreate from scratch
+- write the full markdown plan to .dex/plan.md
+- STOP immediately after writing
+
+The plan MUST use this structure:
+
+---
+# <Title>
+
+## Overview
+<Brief description of what will be implemented>
+
+## Context
+- Files involved: <list relevant files>
+- Related patterns: <existing patterns to follow>
+- Dependencies: <external dependencies if any>
+
+## Development Approach
+- Complete each task fully before moving to the next
+- **CRITICAL: every task that changes code MUST include new/updated tests**
+- **CRITICAL: all tests must pass before starting the next task**
+
+## Implementation Steps
+
+### Task 1: <Title>
+
+**Files:**
+- Modify: `path/to/file`
+- Create: `path/to/new_file` (if any)
+
+- [ ] first implementation step
+- [ ] second implementation step
+- [ ] write tests for this task
+- [ ] run the relevant validation commands
+
+### Task 2: <Title>
+...
+
+### Task N: Verify acceptance criteria
+- [ ] run the full relevant test suite
+- [ ] run the relevant linting or static checks
+
+### Task N+1: Update documentation
+- [ ] update user-facing docs if behavior changed
+- [ ] update internal docs or patterns if needed
+---
+
+## Validation Before Writing
+
+Before writing .dex/plan.md, verify:
+
+**Scope & Feasibility:**
+- tasks are right-sized and executable (aim for 3-7 steps per task)
+- each task focuses on one component or closely related files
+- task dependencies are linear (no circular deps)
+- external dependencies are minimized and clearly noted
+
+**Completeness:**
+- all requirements from the request are covered
+- each task specifies file paths where known
+- each task that modifies code includes test items
+- checkboxes are automatable by a coding agent (no manual testing or deployment items)
+
+**Simplicity (YAGNI):**
+- no unnecessary abstractions
+- no "future-proofing" features not in the original request
+- no backwards compatibility or fallbacks unless explicitly requested
+- new files only for genuinely new components
+- no over-engineered patterns when simpler solutions work
+
+If validation fails, fix the plan before writing .dex/plan.md.
+
+CRITICAL RULES:
+- do NOT ask "should I proceed?"
+- do NOT use natural-language questions outside .dex/questions.md
+- do NOT write any code — only produce the plan or questions
+- when you write .dex/plan.md or .dex/questions.md, STOP immediately
 {{- if .Feedbacks}}
 
 ── Previous feedback from the user ──
@@ -23,5 +122,6 @@ Do NOT write any code. Only produce the plan or questions.
 [Round {{inc $i}}]
 {{$f}}
 {{end}}
-Revise your plan in .dex/plan.md based on ALL feedback above.
+Revise the existing .dex/plan.md based on ALL feedback above.
+Do NOT ignore the current draft or start from scratch unless the feedback requires it.
 {{- end}}

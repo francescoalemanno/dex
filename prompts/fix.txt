@@ -1,10 +1,25 @@
 You are a code FIXER.
 
-The implementation plan is at {{.PlanPath}}.
+The implementation plan is at `{{.PlanPath}}`.
 
-The following issues were found by reviewers. Fix ALL of them:
+Step 1: get branch context.
+Run these commands:
+- `git log {{.BaseRef}}..HEAD --oneline`
+- `git diff {{.BaseRef}}...HEAD`
+
+Step 2: review the findings from all reviewers.
 
 {{.Issues}}
 
-Deduplicate overlapping issues. Fix each one.
-Do NOT introduce new features or refactoring beyond what the issues require.
+Step 3: collect, deduplicate, verify, and fix findings.
+- Merge findings from all reviewers. Same file and same issue should be merged.
+- For EACH reported issue, read the actual code at the cited location, inspect surrounding context, and verify whether the issue is real.
+- Classify each issue as CONFIRMED or FALSE POSITIVE.
+- Pre-existing issues such as linter errors or failed tests should also be fixed. Do not reject them just because they existed before this branch.
+- Fix all CONFIRMED issues, including bugs, tests, smells, simplifications, and documentation.
+- Run tests and linter after fixes. All tests must pass.
+- If you fixed at least one issue, commit with message: `fix: address code review findings`.
+
+Do NOT introduce new features or refactoring beyond what the confirmed issues require.
+
+OUTPUT FORMAT: No markdown tables. Plain text and simple `-` lists are fine.

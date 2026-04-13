@@ -71,6 +71,14 @@ func PlanPhase(r *Runner, request string) (string, error) {
 	var feedbacks []string
 	planPath := dexPath("plan.md")
 
+	if existing, _ := readDexFile("plan.md"); existing != "" {
+		showMarkdown("Existing plan", existing)
+		choice := promptChoice("A plan already exists. Keep as draft, or start fresh?", []string{"keep", "fresh"})
+		if choice == "fresh" {
+			removeDexFile("plan.md")
+		}
+	}
+
 	for iteration := 1; ; iteration++ {
 		info(fmt.Sprintf("Planning iteration %d", iteration))
 
@@ -177,31 +185,57 @@ func ImplPhase(r *Runner, planPath string) error {
 
 type ReviewRole struct {
 	Name   string
+	Scope  string
 	Prompt string
 }
 
 var defaultReviewers = []ReviewRole{
 	{
-		Name: "quality",
-		Prompt: `Review the codebase for correctness and quality.
-Look for: bugs, logic errors, missing error handling at boundaries, edge cases, broken functionality.
-Do NOT suggest style changes or refactoring unless it hides a bug.`,
+		Name:  "quality",
+		Scope: "bugs, security, correctness, reliability",
+		Prompt: `Focus on:
+- logic errors
+- edge cases
+- error handling
+- resource management
+- concurrency issues
+- input validation and security issues`,
 	},
 	{
-		Name: "simplicity",
-		Prompt: `Review the codebase for overengineering and unnecessary complexity.
-Look for: YAGNI violations, premature abstractions, unnecessary indirection, over-complicated solutions.
-Only flag things that should be simplified or removed.`,
+		Name:  "implementation",
+		Scope: "goal coverage, wiring, completeness, logic flow",
+		Prompt: `Focus on:
+- requirement coverage — does the code actually achieve the plan's goal?
+- correctness of the chosen approach
+- wiring and integration between components
+- completeness — are any requirements missing?
+- logic flow and edge cases`,
 	},
 	{
-		Name: "security",
-		Prompt: `Review the codebase for security issues.
-Look for: exposed secrets, injection vulnerabilities, unsafe input handling, insecure defaults.
-Only flag actual security risks, not theoretical concerns.`,
+		Name:  "simplification",
+		Scope: "unnecessary complexity, over-engineering",
+		Prompt: `Focus on:
+- excessive abstraction layers
+- premature generalization
+- unnecessary indirection
+- unused extension points
+- unnecessary fallbacks
+- premature optimization`,
+	},
+	{
+		Name:  "testing",
+		Scope: "coverage, test quality, edge cases",
+		Prompt: `Focus on:
+- missing tests for changed code
+- untested error paths
+- weak assertions
+- fake tests that do not verify behavior
+- missing edge-case coverage
+- test independence`,
 	},
 }
 
-func ReviewPhase(r *Runner, planPath string) error {
+func ReviewPhase(r *Runner, planPath, baseRef string) error {
 	banner("REVIEW")
 
 	for round := 1; ; round++ {
@@ -219,7 +253,9 @@ func ReviewPhase(r *Runner, planPath string) error {
 				defer wg.Done()
 				p := renderPrompt("review.txt", map[string]any{
 					"PlanPath":   planPath,
+					"BaseRef":    baseRef,
 					"RoleName":   role.Name,
+					"RoleScope":  role.Scope,
 					"RolePrompt": role.Prompt,
 					"ReviewPath": dexPath(fmt.Sprintf("review-%s.md", role.Name)),
 				})
@@ -259,6 +295,7 @@ func ReviewPhase(r *Runner, planPath string) error {
 
 		fixPrompt := renderPrompt("fix.txt", map[string]any{
 			"PlanPath": planPath,
+			"BaseRef":  baseRef,
 			"Issues":   strings.Join(issues, "\n\n"),
 		})
 		if err := r.Run(fixPrompt); err != nil {

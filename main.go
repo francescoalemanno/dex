@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 )
 
@@ -11,6 +12,7 @@ func main() {
 	cliName := flag.String("cli", "opencode", "coding CLI to use")
 	planFile := flag.String("plan", "", "skip planning, use existing plan file")
 	skipReview := flag.Bool("no-review", false, "skip the review phase")
+	baseRef := flag.String("base-ref", "HEAD", "base git ref for review diffs")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: dex [flags] <request...>\n\nFlags:\n")
 		flag.PrintDefaults()
@@ -50,6 +52,13 @@ func main() {
 		}
 	}
 
+	// Snapshot base ref before implementation if using default
+	if *baseRef == "HEAD" {
+		if out, err := exec.Command("git", "rev-parse", "HEAD").Output(); err == nil {
+			*baseRef = strings.TrimSpace(string(out))
+		}
+	}
+
 	// Phase 2: Implementation
 	if err := ImplPhase(runner, planPath); err != nil {
 		errMsg(err.Error())
@@ -58,7 +67,7 @@ func main() {
 
 	// Phase 3: Review
 	if !*skipReview {
-		if err := ReviewPhase(runner, planPath); err != nil {
+		if err := ReviewPhase(runner, planPath, *baseRef); err != nil {
 			errMsg(err.Error())
 			os.Exit(1)
 		}

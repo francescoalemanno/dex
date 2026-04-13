@@ -1,13 +1,45 @@
 You are in the IMPLEMENTATION phase.
 
-Read the full plan at {{.PlanPath}}.
+Read the plan file at `{{.PlanPath}}`.
+Find the FIRST Task section that has uncompleted checkboxes (`- [ ]`).
 
-Execute ONLY the following task (the first open task group):
+The current task to execute is:
 
 {{- if .TaskHeader}}
 {{.TaskHeader}}
 {{- end}}
 {{.TaskBody}}
 
-After completing each step, update {{.PlanPath}} and mark the step as "- [x]".
-Do NOT work on any other task. Stop after this task group is done.
+CRITICAL CONSTRAINT: Complete ONE task section per iteration.
+Complete ALL checkboxes in that section, then STOP.
+Do NOT continue to the next section in the same pass.
+
+Before starting work, output a brief overview explaining:
+- which task you picked and its title
+- what the task will accomplish
+- the key files or components involved
+
+## Implementation Rules
+
+- Read the plan's Overview and Context sections to understand the broader work.
+- Implement ALL items in the current task section.
+- Write tests for the implementation when the plan requires it.
+- Run the test and lint commands specified in the plan.
+- Fix failures and repeat until validation passes.
+
+## Handling Non-Automatable Items
+
+If a checkbox requires manual testing, deployment verification, or external systems:
+mark it `- [x] <description> (skipped — not automatable)` and proceed.
+Do NOT loop indefinitely on items you cannot complete.
+
+## Completion Rules
+
+After validation passes:
+1. Edit `{{.PlanPath}}` and change `- [ ]` to `- [x]` for each checkbox you completed in the current task section.
+2. Commit all changes, including the updated plan, with message: `feat: <brief task description>`.
+3. STOP immediately. Do not continue to the next task.
+
+If any step fails after reasonable fix attempts, STOP and report the failure.
+
+OUTPUT FORMAT: No markdown tables. Plain text and simple `-` lists are fine.
