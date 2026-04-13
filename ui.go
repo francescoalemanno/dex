@@ -52,24 +52,14 @@ func showMarkdown(title, md string) {
 	fmt.Printf("%s%s── end ──%s\n\n", colorBold, colorDim, colorReset)
 }
 
-func prompt(msg string) string {
-	fmt.Printf("%s%s%s ", colorBold, msg, colorReset)
-	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-	if scanner.Scan() {
-		return strings.TrimSpace(scanner.Text())
-	}
-	return ""
-}
-
 func promptMultiline(msg string) string {
-	fmt.Printf("%s%s%s %s(empty line to finish)%s\n", colorBold, msg, colorReset, colorDim, colorReset)
+	fmt.Printf("%s%s%s %s(single .  to finish)%s\n", colorBold, msg, colorReset, colorDim, colorReset)
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 	var lines []string
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.TrimSpace(line) == "" && len(lines) > 0 {
+		if strings.TrimSpace(line) == "." && len(lines) > 0 {
 			break
 		}
 		lines = append(lines, line)
