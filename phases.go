@@ -108,7 +108,7 @@ func PlanPhase(r *Runner, request string) (string, error) {
 			continue
 		}
 
-		showBlock("Plan", plan)
+		showMarkdown("Plan", plan)
 
 		choice := promptChoice("Accept, revise, or reject?", []string{"accept", "revise", "reject"})
 		switch choice {
@@ -243,7 +243,7 @@ func ReviewPhase(r *Runner, planPath string) error {
 				allClean = false
 				continue
 			}
-			showBlock(fmt.Sprintf("Review: %s", rv.Name), review)
+			showMarkdown(fmt.Sprintf("Review: %s", rv.Name), review)
 			if !isCleanReview(review) {
 				allClean = false
 				issues = append(issues, fmt.Sprintf("── %s ──\n%s", rv.Name, review))

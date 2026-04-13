@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/charmbracelet/glamour"
 )
 
 const (
@@ -36,6 +38,17 @@ func errMsg(msg string) {
 func showBlock(title, content string) {
 	fmt.Printf("\n%s%s── %s ──%s\n", colorBold, colorDim, title, colorReset)
 	fmt.Println(content)
+	fmt.Printf("%s%s── end ──%s\n\n", colorBold, colorDim, colorReset)
+}
+
+func showMarkdown(title, md string) {
+	fmt.Printf("\n%s%s── %s ──%s\n", colorBold, colorDim, title, colorReset)
+	rendered, err := glamour.Render(md, "auto")
+	if err != nil {
+		fmt.Println(md)
+	} else {
+		fmt.Print(rendered)
+	}
 	fmt.Printf("%s%s── end ──%s\n\n", colorBold, colorDim, colorReset)
 }
 
