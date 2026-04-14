@@ -2,8 +2,12 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 	"sync"
+
+	udiff "github.com/aymanbagabas/go-udiff"
 )
 
 // ── Phase 1: Planning ──
@@ -77,7 +81,7 @@ func PlanPhase(r *Runner, userInput string) (string, error) {
 
 		showMarkdown("Plan", plan)
 
-		choice := promptChoice("Accept, revise, or reject?", []string{"accept", "revise", "reject"})
+		choice := promptChoice("Accept, edit, revise, or reject?", []string{"accept", "edit", "revise", "reject"})
 		switch choice {
 		case "accept":
 			info("Plan accepted!")
@@ -85,12 +89,76 @@ func PlanPhase(r *Runner, userInput string) (string, error) {
 		case "reject":
 			warn("Plan rejected.")
 			return "", nil
+		case "edit":
+			diff, err := editPlanInEditor(plan)
+			if err != nil {
+				errMsg(fmt.Sprintf("Editor error: %v", err))
+				continue
+			}
+			if diff == "" {
+				continue
+			}
+			feedback := fmt.Sprintf("user provided feedback in the form of a unified diff: \n\n%s", diff)
+			feedbacks = append(feedbacks, feedback)
+			saveFeedbacks(feedbacks)
 		case "revise":
 			feedback := promptMultiline("Your revision feedback:")
 			feedbacks = append(feedbacks, feedback)
 			saveFeedbacks(feedbacks)
 		}
 	}
+}
+
+func editorCmd() string {
+	if v := os.Getenv("VISUAL"); v != "" {
+		return v
+	}
+	if v := os.Getenv("EDITOR"); v != "" {
+		return v
+	}
+	return "vi"
+}
+
+func editPlanInEditor(plan string) (string, error) {
+	tmp, err := os.CreateTemp("", "dex-plan-*.md")
+	if err != nil {
+		return "", fmt.Errorf("create temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	if _, err := tmp.WriteString(plan); err != nil {
+		tmp.Close()
+		return "", fmt.Errorf("write temp file: %w", err)
+	}
+	tmp.Close()
+
+	editor := editorCmd()
+	cmd := exec.Command(editor, tmpPath)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("editor %q: %w", editor, err)
+	}
+
+	edited, err := os.ReadFile(tmpPath)
+	if err != nil {
+		return "", fmt.Errorf("read temp file: %w", err)
+	}
+
+	editedStr := string(edited)
+	if editedStr == plan {
+		warn("No changes detected.")
+		return "", nil
+	}
+
+	edits := udiff.Lines(plan, editedStr)
+	diff, err := udiff.ToUnified("plan.md", "plan.md.edited", plan, edits, 5)
+	if err != nil {
+		return "", fmt.Errorf("compute diff: %w", err)
+	}
+	return diff, nil
 }
 
 // ── Phase 2: Implementation ──
