@@ -21,6 +21,7 @@ Before starting work, output a brief overview explaining:
 
 ## Implementation Rules
 
+- NEVER assume that something is not already implemented, study existing project files extensively.
 - Read the plan's Overview and Context sections to understand the broader work.
 - Implement ALL items in the current task section.
 - Write tests for the implementation when the plan requires it.
