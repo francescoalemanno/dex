@@ -189,17 +189,19 @@ type ReviewRole struct {
 	Prompt string
 }
 
-var defaultReviewers = []ReviewRole{
+// broadReviewers run once for a comprehensive first pass.
+var broadReviewers = []ReviewRole{
 	{
 		Name:  "quality",
-		Scope: "bugs, security, correctness, reliability",
+		Scope: "bugs, security, correctness, simplicity",
 		Prompt: `Focus on:
 - logic errors
 - edge cases
 - error handling
 - resource management
 - concurrency issues
-- input validation and security issues`,
+- input validation and security issues
+- unnecessary abstraction or over-engineering when a simpler solution would work`,
 	},
 	{
 		Name:  "implementation",
@@ -233,81 +235,136 @@ var defaultReviewers = []ReviewRole{
 - missing edge-case coverage
 - test independence`,
 	},
+	{
+		Name:  "documentation",
+		Scope: "README, internal docs, plan alignment",
+		Prompt: `Focus on:
+- missing README updates for new features, flags, configuration, APIs, or changed behavior
+- missing internal documentation updates for new patterns, commands, or architecture
+- plan file drift that should be corrected while addressing documentation gaps`,
+	},
 }
 
-const maxReviewRounds = 6
+// focusedReviewers run in a loop after the broad pass, targeting only critical/major issues.
+var focusedReviewers = []ReviewRole{
+	{
+		Name:  "quality",
+		Scope: "critical and major correctness, security, reliability",
+		Prompt: `Review code only for critical and major bugs, security issues, and correctness problems.
+Ignore style issues and minor suggestions.
+Focus on:
+- logic errors that cause incorrect behavior
+- security vulnerabilities
+- data loss or corruption risks
+- concurrency bugs`,
+	},
+	{
+		Name:  "implementation",
+		Scope: "critical and major goal coverage, integration, completeness",
+		Prompt: `Review whether any critical or major requirement-coverage or integration issues remain.
+Ignore style issues and minor suggestions.
+Focus on:
+- requirements that are not implemented at all
+- integration bugs between components
+- critical logic flow errors`,
+	},
+}
+
+const maxFocusedRounds = 3
 
 func ReviewPhase(r *Runner, planPath, baseRef string) error {
-	for round := 1; round <= maxReviewRounds; round++ {
-		banner(fmt.Sprintf("review-fanout | iteration %d/%d", round, maxReviewRounds))
-
-		for _, rv := range defaultReviewers {
-			removeDexFile(fmt.Sprintf("review-%s.md", rv.Name))
-		}
-
-		var wg sync.WaitGroup
-		errs := make([]error, len(defaultReviewers))
-		for i, rv := range defaultReviewers {
-			wg.Add(1)
-			go func(idx int, role ReviewRole) {
-				defer wg.Done()
-				info(fmt.Sprintf("[parallel:%s] running %s review", role.Name, role.Scope))
-				p := renderPrompt("review.txt", map[string]any{
-					"PlanPath":   planPath,
-					"BaseRef":    baseRef,
-					"RoleName":   role.Name,
-					"RoleScope":  role.Scope,
-					"RolePrompt": role.Prompt,
-					"ReviewPath": dexPath(fmt.Sprintf("review-%s.md", role.Name)),
-				})
-				errs[idx] = r.Run(p)
-				if errs[idx] != nil {
-					errMsg(fmt.Sprintf("[parallel:%s] done %s review (exit=1)", role.Name, role.Scope))
-				} else {
-					info(fmt.Sprintf("[parallel:%s] done %s review (exit=0)", role.Name, role.Scope))
-				}
-			}(i, rv)
-		}
-		wg.Wait()
-
-		allClean := true
-		var issues []string
-		for _, rv := range defaultReviewers {
-			review, _ := readDexFile(fmt.Sprintf("review-%s.md", rv.Name))
-			if review == "" {
-				warn(fmt.Sprintf("Reviewer %q produced no output", rv.Name))
-				allClean = false
-				continue
-			}
-			showMarkdown(fmt.Sprintf("Review: %s", rv.Name), review)
-			if !isCleanReview(review) {
-				allClean = false
-				issues = append(issues, fmt.Sprintf("── %s ──\n%s", rv.Name, review))
-			}
-		}
-
-		if allClean {
-			info("All reviewers report ZERO ISSUES. Review phase complete!")
-			return nil
-		}
-
-		info("Issues found — running fixer...")
-
-		fixPrompt := renderPrompt("fix.txt", map[string]any{
-			"PlanPath": planPath,
-			"BaseRef":  baseRef,
-			"Issues":   strings.Join(issues, "\n\n"),
-		})
-		if err := r.Run(fixPrompt); err != nil {
-			errMsg(fmt.Sprintf("Fixer error: %v", err))
-			choice := promptChoice("Retry round or abort?", []string{"retry", "abort"})
-			if choice == "abort" {
-				return fmt.Errorf("aborted by user")
-			}
+	// ── Broad pass: all reviewers, once ──
+	issues := runReviewFanout(r, planPath, baseRef, broadReviewers, "broad", 1, 1)
+	if issues != nil {
+		if err := runFixer(r, planPath, baseRef, issues); err != nil {
+			return err
 		}
 	}
 
-	warn(fmt.Sprintf("Review cap of %d rounds reached, accepting current state.", maxReviewRounds))
+	// ── Focused pass: critical/major reviewers, loop till clean ──
+	for round := 1; round <= maxFocusedRounds; round++ {
+		issues := runReviewFanout(r, planPath, baseRef, focusedReviewers, "focused", round, maxFocusedRounds)
+		if issues == nil {
+			info("All focused reviewers report ZERO ISSUES. Review phase complete!")
+			return nil
+		}
+		if err := runFixer(r, planPath, baseRef, issues); err != nil {
+			return err
+		}
+	}
+
+	warn(fmt.Sprintf("Focused review cap of %d rounds reached, accepting current state.", maxFocusedRounds))
+	return nil
+}
+
+func runReviewFanout(r *Runner, planPath, baseRef string, reviewers []ReviewRole, label string, round, maxRounds int) []string {
+	banner(fmt.Sprintf("%s-review | round %d/%d", label, round, maxRounds))
+
+	for _, rv := range reviewers {
+		removeDexFile(fmt.Sprintf("review-%s.md", rv.Name))
+	}
+
+	var wg sync.WaitGroup
+	errs := make([]error, len(reviewers))
+	for i, rv := range reviewers {
+		wg.Add(1)
+		go func(idx int, role ReviewRole) {
+			defer wg.Done()
+			info(fmt.Sprintf("[parallel:%s] running %s review", role.Name, role.Scope))
+			p := renderPrompt("review.txt", map[string]any{
+				"PlanPath":   planPath,
+				"BaseRef":    baseRef,
+				"RoleName":   role.Name,
+				"RoleScope":  role.Scope,
+				"RolePrompt": role.Prompt,
+				"ReviewPath": dexPath(fmt.Sprintf("review-%s.md", role.Name)),
+			})
+			errs[idx] = r.Run(p)
+			if errs[idx] != nil {
+				errMsg(fmt.Sprintf("[parallel:%s] done %s review (exit=1)", role.Name, role.Scope))
+			} else {
+				info(fmt.Sprintf("[parallel:%s] done %s review (exit=0)", role.Name, role.Scope))
+			}
+		}(i, rv)
+	}
+	wg.Wait()
+
+	allClean := true
+	var issues []string
+	for _, rv := range reviewers {
+		review, _ := readDexFile(fmt.Sprintf("review-%s.md", rv.Name))
+		if review == "" {
+			warn(fmt.Sprintf("Reviewer %q produced no output", rv.Name))
+			allClean = false
+			continue
+		}
+		showMarkdown(fmt.Sprintf("Review: %s", rv.Name), review)
+		if !isCleanReview(review) {
+			allClean = false
+			issues = append(issues, fmt.Sprintf("── %s ──\n%s", rv.Name, review))
+		}
+	}
+
+	if allClean {
+		return nil
+	}
+	return issues
+}
+
+func runFixer(r *Runner, planPath, baseRef string, issues []string) error {
+	info("Issues found — running fixer...")
+	fixPrompt := renderPrompt("fix.txt", map[string]any{
+		"PlanPath": planPath,
+		"BaseRef":  baseRef,
+		"Issues":   strings.Join(issues, "\n\n"),
+	})
+	if err := r.Run(fixPrompt); err != nil {
+		errMsg(fmt.Sprintf("Fixer error: %v", err))
+		choice := promptChoice("Retry or abort?", []string{"retry", "abort"})
+		if choice == "abort" {
+			return fmt.Errorf("aborted by user")
+		}
+	}
 	return nil
 }
 
