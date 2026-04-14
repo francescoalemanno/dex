@@ -25,6 +25,12 @@ dex keeps the same philosophy — markdown plans, checkbox progress, one task pe
 ## Quick start
 
 ```bash
+curl -sSfL https://raw.githubusercontent.com/francescoalemanno/dex/main/install.sh | bash
+```
+
+Or with Go:
+
+```bash
 go install github.com/francescoalemanno/dex@latest
 ```
 
