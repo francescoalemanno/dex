@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
+	"time"
 )
 
 type CLIConfig struct {
@@ -17,13 +21,13 @@ type CLIConfig struct {
 var cliConfigs = map[string]CLIConfig{
 	"opencode": {
 		Cmd:   "opencode",
-		Args:  []string{"run", "--thinking", "--format", "default"},
+		Args:  []string{"run", "--thinking", "--format", "json"},
 		Stdin: true,
 		Env: map[string]string{
 			"OPENCODE_CONFIG_CONTENT": `{"$schema":"https://opencode.ai/config.json","permission":"allow","lsp":false}`,
 		},
 	},
-	"codex":  {Cmd: "codex", Args: []string{"exec", "--dangerously-bypass-approvals-and-sandbox", "--ephemeral"}, Stdin: true},
+	"codex":  {Cmd: "codex", Args: []string{"exec", "--dangerously-bypass-approvals-and-sandbox", "--ephemeral", "--json"}, Stdin: true},
 	"claude": {Cmd: "claude", Args: []string{"--dangerously-skip-permissions", "--allow-dangerously-skip-permissions", "-p"}, Stdin: false},
 	"droid":  {Cmd: "droid", Args: []string{"exec", "--skip-permissions-unsafe"}, Stdin: false},
 	"gemini": {Cmd: "gemini", Args: []string{"-y", "-p"}, Stdin: false},
@@ -32,10 +36,11 @@ var cliConfigs = map[string]CLIConfig{
 }
 
 type Runner struct {
-	cfg CLIConfig
+	cfg     CLIConfig
+	timeout time.Duration
 }
 
-func NewRunner(name string) (*Runner, error) {
+func NewRunner(name string, timeout time.Duration) (*Runner, error) {
 	cfg, ok := cliConfigs[name]
 	if !ok {
 		names := make([]string, 0, len(cliConfigs))
@@ -44,18 +49,37 @@ func NewRunner(name string) (*Runner, error) {
 		}
 		return nil, fmt.Errorf("unknown CLI %q, available: %s", name, strings.Join(names, ", "))
 	}
-	return &Runner{cfg: cfg}, nil
+	return &Runner{cfg: cfg, timeout: timeout}, nil
 }
 
 func (r *Runner) Run(prompt string) error {
+	delay := time.Second
+	for attempt := 0; attempt <= 3; attempt++ {
+		if attempt > 0 {
+			warn(fmt.Sprintf("Retry %d/3 after %.0fs delay", attempt, delay.Seconds()))
+			time.Sleep(delay)
+			next := delay * 60
+			if next > time.Hour {
+				next = time.Hour
+			}
+			delay = next
+		}
+		err := r.runOnce(prompt)
+		if err == nil {
+			return nil
+		}
+		errMsg(fmt.Sprintf("Agent failed: %v", err))
+	}
+	return fmt.Errorf("agent failed after 3 retries")
+}
+
+func (r *Runner) runOnce(prompt string) error {
 	args := append([]string{}, r.cfg.Args...)
 	if !r.cfg.Stdin {
 		args = append(args, prompt)
 	}
 
 	cmd := exec.Command(r.cfg.Cmd, args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
 	if len(r.cfg.Env) > 0 {
 		cmd.Env = os.Environ()
 		for k, v := range r.cfg.Env {
@@ -63,9 +87,115 @@ func (r *Runner) Run(prompt string) error {
 		}
 	}
 
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("stdout pipe: %w", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("stderr pipe: %w", err)
+	}
+
 	if r.cfg.Stdin {
 		cmd.Stdin = strings.NewReader(prompt)
 	}
 
-	return cmd.Run()
+	start := time.Now()
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	type line struct {
+		text     string
+		isStdout bool
+	}
+
+	lines := make(chan line)
+	var wg sync.WaitGroup
+
+	scan := func(s *bufio.Scanner, isStdout bool) {
+		defer wg.Done()
+		for s.Scan() {
+			lines <- line{text: s.Text(), isStdout: isStdout}
+		}
+	}
+
+	wg.Add(2)
+	go scan(bufio.NewScanner(stdout), true)
+	go scan(bufio.NewScanner(stderr), false)
+	go func() { wg.Wait(); close(lines) }()
+
+	timer := time.NewTimer(r.timeout)
+	defer timer.Stop()
+
+	for {
+		select {
+		case l, ok := <-lines:
+			if !ok {
+				return cmd.Wait()
+			}
+			timer.Reset(r.timeout)
+			if l.isStdout {
+				processStdoutLine(l.text, start)
+			} else {
+				fmt.Fprintln(os.Stderr, l.text)
+			}
+		case <-timer.C:
+			cmd.Process.Kill()
+			cmd.Wait()
+			return fmt.Errorf("agent idle timeout after %v", r.timeout)
+		}
+	}
+}
+
+func processStdoutLine(text string, start time.Time) {
+	var obj any
+	if json.Unmarshal([]byte(text), &obj) == nil {
+		if m, ok := obj.(map[string]any); ok {
+			texts := extractTexts(m)
+			if len(texts) > 0 {
+				elapsed := time.Since(start)
+				ts := formatElapsed(elapsed)
+				for _, t := range texts {
+					fmt.Printf("%s %s\n", ts, t)
+				}
+				return
+			}
+		}
+		// JSON but no text fields or not an object — suppress
+		return
+	}
+	fmt.Printf("%s %s\n", formatElapsed(time.Since(start)), text)
+}
+
+func extractTexts(v any) []string {
+	var out []string
+	walkJSON(v, &out)
+	return out
+}
+
+func walkJSON(v any, texts *[]string) {
+	switch val := v.(type) {
+	case map[string]any:
+		for k, child := range val {
+			if k == "text" {
+				if s, ok := child.(string); ok {
+					*texts = append(*texts, s)
+					continue
+				}
+			}
+			walkJSON(child, texts)
+		}
+	case []any:
+		for _, item := range val {
+			walkJSON(item, texts)
+		}
+	}
+}
+
+func formatElapsed(d time.Duration) string {
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	s := int(d.Seconds()) % 60
+	return fmt.Sprintf("[%02d:%02d:%02d]", h, m, s)
 }

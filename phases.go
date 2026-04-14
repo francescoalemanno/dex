@@ -235,11 +235,11 @@ var defaultReviewers = []ReviewRole{
 	},
 }
 
-func ReviewPhase(r *Runner, planPath, baseRef string) error {
-	banner("REVIEW")
+const maxReviewRounds = 6
 
-	for round := 1; ; round++ {
-		info(fmt.Sprintf("Review round %d — running %d reviewers in parallel", round, len(defaultReviewers)))
+func ReviewPhase(r *Runner, planPath, baseRef string) error {
+	for round := 1; round <= maxReviewRounds; round++ {
+		banner(fmt.Sprintf("review-fanout | iteration %d/%d", round, maxReviewRounds))
 
 		for _, rv := range defaultReviewers {
 			removeDexFile(fmt.Sprintf("review-%s.md", rv.Name))
@@ -251,6 +251,7 @@ func ReviewPhase(r *Runner, planPath, baseRef string) error {
 			wg.Add(1)
 			go func(idx int, role ReviewRole) {
 				defer wg.Done()
+				info(fmt.Sprintf("[parallel:%s] running %s review", role.Name, role.Scope))
 				p := renderPrompt("review.txt", map[string]any{
 					"PlanPath":   planPath,
 					"BaseRef":    baseRef,
@@ -260,15 +261,14 @@ func ReviewPhase(r *Runner, planPath, baseRef string) error {
 					"ReviewPath": dexPath(fmt.Sprintf("review-%s.md", role.Name)),
 				})
 				errs[idx] = r.Run(p)
+				if errs[idx] != nil {
+					errMsg(fmt.Sprintf("[parallel:%s] done %s review (exit=1)", role.Name, role.Scope))
+				} else {
+					info(fmt.Sprintf("[parallel:%s] done %s review (exit=0)", role.Name, role.Scope))
+				}
 			}(i, rv)
 		}
 		wg.Wait()
-
-		for i, err := range errs {
-			if err != nil {
-				errMsg(fmt.Sprintf("Reviewer %q failed: %v", defaultReviewers[i].Name, err))
-			}
-		}
 
 		allClean := true
 		var issues []string
@@ -306,6 +306,9 @@ func ReviewPhase(r *Runner, planPath, baseRef string) error {
 			}
 		}
 	}
+
+	warn(fmt.Sprintf("Review cap of %d rounds reached, accepting current state.", maxReviewRounds))
+	return nil
 }
 
 func isCleanReview(review string) bool {

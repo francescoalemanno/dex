@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 type Config struct {
@@ -39,6 +40,7 @@ func main() {
 	planFile := flag.String("plan", defaults.Plan, "skip planning, use existing plan file")
 	skipReview := flag.Bool("no-review", defaults.NoReview, "skip the review phase")
 	baseRef := flag.String("base-ref", defaults.BaseRef, "base git ref for review diffs")
+	timeout := flag.Duration("timeout", 20*time.Minute, "kill agent after this idle duration")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: dex [flags] <request...>\n\nFlags:\n")
 		flag.PrintDefaults()
@@ -51,11 +53,6 @@ func main() {
 	}
 	flag.Parse()
 
-	if flag.NArg() == 0 && *planFile == "" {
-		flag.Usage()
-		os.Exit(1)
-	}
-
 	// Persist final flag values
 	saveConfig(Config{
 		CLI:      *cliName,
@@ -64,13 +61,20 @@ func main() {
 		BaseRef:  *baseRef,
 	})
 
-	runner, err := NewRunner(*cliName)
+	runner, err := NewRunner(*cliName, *timeout)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 
 	request := strings.Join(flag.Args(), " ")
+	if request == "" && *planFile == "" {
+		request = promptMultiline("Enter your request:")
+		if strings.TrimSpace(request) == "" {
+			flag.Usage()
+			os.Exit(1)
+		}
+	}
 
 	// Phase 1: Planning
 	planPath := *planFile
