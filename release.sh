@@ -6,7 +6,7 @@ if [ -n "$(git status --porcelain)" ]; then
   echo "Error: working tree is dirty — commit or stash changes first." >&2
   exit 1
 fi
-
+git push
 # Show current tags for reference
 latest=$(git describe --tags --abbrev=0 2>/dev/null || echo "none")
 echo "Latest tag: $latest"
