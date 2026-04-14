@@ -8,7 +8,8 @@ if [ -n "$(git status --porcelain)" ]; then
 fi
 git push
 # Show current tags for reference
-latest=$(git describe --tags --abbrev=0 2>/dev/null || echo "none")
+latest=$(git tag --sort=-v:refname | head -n1)
+latest=${latest:-none}
 echo "Latest tag: $latest"
 
 # Prompt for new version
