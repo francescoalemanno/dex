@@ -339,6 +339,7 @@ func runReviewFanout(r *Runner, planPath, baseRef string, reviewers []ReviewRole
 		go func(idx int, role ReviewRole) {
 			defer wg.Done()
 			info(fmt.Sprintf("[parallel:%s] running %s review", role.Name, role.Scope))
+			lr := r.Labeled(role.Name)
 			p := renderPrompt("review.txt", map[string]any{
 				"PlanPath":   planPath,
 				"BaseRef":    baseRef,
@@ -347,7 +348,7 @@ func runReviewFanout(r *Runner, planPath, baseRef string, reviewers []ReviewRole
 				"RolePrompt": role.Prompt,
 				"ReviewPath": dexPath(fmt.Sprintf("review-%s.md", role.Name)),
 			})
-			errs[idx] = r.Run(p)
+			errs[idx] = lr.Run(p)
 			if errs[idx] != nil {
 				errMsg(fmt.Sprintf("[parallel:%s] done %s review (exit=1)", role.Name, role.Scope))
 			} else {

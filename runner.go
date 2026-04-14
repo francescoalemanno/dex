@@ -40,6 +40,11 @@ var cliConfigs = map[string]CLIConfig{
 type Runner struct {
 	cfg     CLIConfig
 	timeout time.Duration
+	label   string
+}
+
+func (r *Runner) Labeled(label string) *Runner {
+	return &Runner{cfg: r.cfg, timeout: r.timeout, label: label}
 }
 
 func NewRunner(name string, timeout time.Duration) (*Runner, error) {
@@ -56,11 +61,11 @@ func NewRunner(name string, timeout time.Duration) (*Runner, error) {
 
 func (r *Runner) Run(prompt string) error {
 	delay := time.Second
-	for attempt := 0; attempt <= 3; attempt++ {
+	for attempt := 0; attempt <= 5; attempt++ {
 		if attempt > 0 {
-			warn(fmt.Sprintf("Retry %d/3 after %.0fs delay", attempt, delay.Seconds()))
+			warn(fmt.Sprintf("Retry %d/5 after %.0fs delay", attempt, delay.Seconds()))
 			time.Sleep(delay)
-			next := delay * 60
+			next := delay * 8
 			if next > time.Hour {
 				next = time.Hour
 			}
@@ -72,7 +77,7 @@ func (r *Runner) Run(prompt string) error {
 		}
 		errMsg(fmt.Sprintf("Agent failed: %v", err))
 	}
-	return fmt.Errorf("agent failed after 3 retries")
+	return fmt.Errorf("agent failed after 5 retries")
 }
 
 func (r *Runner) runOnce(prompt string) error {
@@ -82,6 +87,7 @@ func (r *Runner) runOnce(prompt string) error {
 	}
 
 	cmd := exec.Command(r.cfg.Cmd, args...)
+	setProcGroup(cmd)
 	if len(r.cfg.Env) > 0 {
 		cmd.Env = os.Environ()
 		for k, v := range r.cfg.Env {
@@ -103,6 +109,7 @@ func (r *Runner) runOnce(prompt string) error {
 	}
 
 	start := time.Now()
+	lastOutput := start
 	if err := cmd.Start(); err != nil {
 		return err
 	}
@@ -138,36 +145,53 @@ func (r *Runner) runOnce(prompt string) error {
 			}
 			timer.Reset(r.timeout)
 			if l.isStdout {
-				processStdoutLine(l.text, start)
+				if processStdoutLine(l.text, start, r.label) {
+					lastOutput = time.Now()
+				} else if time.Since(lastOutput) >= time.Minute {
+					lipgloss.Printf("%s %s\n", formatPrefix(start, r.label), "Working on it")
+					lastOutput = time.Now()
+				}
 			} else {
-				fmt.Fprintln(os.Stderr, l.text)
+				if r.label != "" {
+					fmt.Fprintf(os.Stderr, "[%s] %s\n", r.label, l.text)
+				} else {
+					fmt.Fprintln(os.Stderr, l.text)
+				}
 			}
 		case <-timer.C:
-			cmd.Process.Kill()
+			killProcessTree(cmd)
 			cmd.Wait()
 			return fmt.Errorf("agent idle timeout after %v", r.timeout)
 		}
 	}
 }
 
-func processStdoutLine(text string, start time.Time) {
+func formatPrefix(start time.Time, label string) string {
+	ts := formatElapsed(time.Since(start))
+	if label != "" {
+		return fmt.Sprintf("%s [%s]", ts, label)
+	}
+	return ts
+}
+
+func processStdoutLine(text string, start time.Time, label string) bool {
+	prefix := formatPrefix(start, label)
+
 	var obj any
 	if json.Unmarshal([]byte(text), &obj) == nil {
 		if m, ok := obj.(map[string]any); ok {
 			texts := extractTexts(m)
 			if len(texts) > 0 {
-				elapsed := time.Since(start)
-				ts := formatElapsed(elapsed)
 				for _, t := range texts {
-					lipgloss.Printf("%s %s\n", ts, t)
+					lipgloss.Printf("%s %s\n", prefix, t)
 				}
-				return
+				return true
 			}
 		}
-		// JSON but no text fields or not an object — suppress
-		return
+		return false
 	}
-	lipgloss.Printf("%s %s\n", formatElapsed(time.Since(start)), text)
+	lipgloss.Printf("%s %s\n", prefix, text)
+	return true
 }
 
 func extractTexts(v any) []string {
