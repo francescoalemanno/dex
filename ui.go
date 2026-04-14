@@ -6,54 +6,60 @@ import (
 	"os"
 	"strings"
 
-	"github.com/charmbracelet/glamour"
+	"charm.land/glamour/v2"
+	"charm.land/lipgloss/v2"
 )
 
-const (
-	colorReset  = "\033[0m"
-	colorBold   = "\033[1m"
-	colorCyan   = "\033[36m"
-	colorGreen  = "\033[32m"
-	colorYellow = "\033[33m"
-	colorRed    = "\033[31m"
-	colorDim    = "\033[2m"
+var (
+	styleBanner = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))  // cyan
+	styleInfo   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2"))  // green
+	styleWarn   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))  // yellow
+	styleErr    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1"))  // red
+	styleDim    = lipgloss.NewStyle().Bold(true).Faint(true)
+
+	glamourStyle = func() string {
+		if lipgloss.HasDarkBackground(os.Stdin, os.Stdout) {
+			return "dark"
+		}
+		return "light"
+	}()
 )
 
 func banner(phase string) {
-	fmt.Printf("\n%s%s══════ %s ══════%s\n\n", colorBold, colorCyan, phase, colorReset)
+	lipgloss.Printf("\n%s\n\n", styleBanner.Render(fmt.Sprintf("══════ %s ══════", phase)))
 }
 
 func info(msg string) {
-	fmt.Printf("%s%s▸ %s%s\n", colorBold, colorGreen, msg, colorReset)
+	lipgloss.Println(styleInfo.Render("▸ " + msg))
 }
 
 func warn(msg string) {
-	fmt.Printf("%s%s▸ %s%s\n", colorBold, colorYellow, msg, colorReset)
+	lipgloss.Println(styleWarn.Render("▸ " + msg))
 }
 
 func errMsg(msg string) {
-	fmt.Printf("%s%s▸ %s%s\n", colorBold, colorRed, msg, colorReset)
+	lipgloss.Println(styleErr.Render("▸ " + msg))
 }
 
 func showBlock(title, content string) {
-	fmt.Printf("\n%s%s── %s ──%s\n", colorBold, colorDim, title, colorReset)
+	lipgloss.Printf("\n%s\n", styleDim.Render(fmt.Sprintf("── %s ──", title)))
 	fmt.Println(content)
-	fmt.Printf("%s%s── end ──%s\n\n", colorBold, colorDim, colorReset)
+	lipgloss.Printf("%s\n\n", styleDim.Render("── end ──"))
 }
 
 func showMarkdown(title, md string) {
-	fmt.Printf("\n%s%s── %s ──%s\n", colorBold, colorDim, title, colorReset)
-	rendered, err := glamour.Render(md, "auto")
+	lipgloss.Printf("\n%s\n", styleDim.Render(fmt.Sprintf("── %s ──", title)))
+	rendered, err := glamour.Render(md, glamourStyle)
 	if err != nil {
 		fmt.Println(md)
 	} else {
-		fmt.Print(rendered)
+		lipgloss.Print(rendered)
 	}
-	fmt.Printf("%s%s── end ──%s\n\n", colorBold, colorDim, colorReset)
+	lipgloss.Printf("%s\n\n", styleDim.Render("── end ──"))
 }
 
 func promptMultiline(msg string) string {
-	fmt.Printf("%s%s%s %s(single .  to finish)%s\n", colorBold, msg, colorReset, colorDim, colorReset)
+	lipgloss.Printf("%s %s\n", lipgloss.NewStyle().Bold(true).Render(msg), styleDim.Render("(single .  to finish)"))
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 	var lines []string
@@ -69,7 +75,7 @@ func promptMultiline(msg string) string {
 
 func promptChoice(msg string, choices []string) string {
 	for {
-		fmt.Printf("%s%s%s [%s] ", colorBold, msg, colorReset, strings.Join(choices, "/"))
+		lipgloss.Printf("%s [%s] ", lipgloss.NewStyle().Bold(true).Render(msg), strings.Join(choices, "/"))
 		scanner := bufio.NewScanner(os.Stdin)
 		if scanner.Scan() {
 			ans := strings.ToLower(strings.TrimSpace(scanner.Text()))

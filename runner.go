@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"charm.land/lipgloss/v2"
 )
 
 type CLIConfig struct {
@@ -157,7 +159,7 @@ func processStdoutLine(text string, start time.Time) {
 				elapsed := time.Since(start)
 				ts := formatElapsed(elapsed)
 				for _, t := range texts {
-					fmt.Printf("%s %s\n", ts, t)
+					lipgloss.Printf("%s %s\n", ts, t)
 				}
 				return
 			}
@@ -165,7 +167,7 @@ func processStdoutLine(text string, start time.Time) {
 		// JSON but no text fields or not an object — suppress
 		return
 	}
-	fmt.Printf("%s %s\n", formatElapsed(time.Since(start)), text)
+	lipgloss.Printf("%s %s\n", formatElapsed(time.Since(start)), text)
 }
 
 func extractTexts(v any) []string {
@@ -193,9 +195,11 @@ func walkJSON(v any, texts *[]string) {
 	}
 }
 
+var styleTimestamp = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
+
 func formatElapsed(d time.Duration) string {
 	h := int(d.Hours())
 	m := int(d.Minutes()) % 60
 	s := int(d.Seconds()) % 60
-	return fmt.Sprintf("[%02d:%02d:%02d]", h, m, s)
+	return styleTimestamp.Render(fmt.Sprintf("[%02d:%02d:%02d]", h, m, s))
 }
