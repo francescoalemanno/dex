@@ -29,7 +29,7 @@ var cliConfigs = map[string]CLIConfig{
 			"OPENCODE_CONFIG_CONTENT": `{"$schema":"https://opencode.ai/config.json","permission":"allow","lsp":false}`,
 		},
 	},
-	"codex":  {Cmd: "codex", Args: []string{"exec", "--dangerously-bypass-approvals-and-sandbox", "--ephemeral", "--json"}, Stdin: true},
+	"codex":  {Cmd: "codex", Args: []string{"exec", "--yolo", "--ephemeral", "--json"}, Stdin: true},
 	"claude": {Cmd: "claude", Args: []string{"--dangerously-skip-permissions", "--allow-dangerously-skip-permissions", "-p"}, Stdin: false},
 	"droid":  {Cmd: "droid", Args: []string{"exec", "--skip-permissions-unsafe"}, Stdin: false},
 	"gemini": {Cmd: "gemini", Args: []string{"-y", "-p"}, Stdin: false},
