@@ -41,6 +41,8 @@ func main() {
 	skipReview := flag.Bool("no-review", defaults.NoReview, "skip the review phase")
 	baseRef := flag.String("base-ref", defaults.BaseRef, "base git ref for review diffs")
 	timeout := flag.Duration("timeout", 20*time.Minute, "kill agent after this idle duration")
+	bare := flag.Int("b", 0, "bare mode: send request straight to agent for N iterations (e.g. -b=10)")
+	finalize := flag.Bool("finalize", false, "run finalize phase: rebase, tidy commits, rerun checks")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: dex [flags] <request...>\n\nFlags:\n")
 		flag.PrintDefaults()
@@ -68,6 +70,46 @@ func main() {
 	}
 
 	request := strings.Join(flag.Args(), " ")
+
+	// ── Bare mode ──
+	if *bare > 0 {
+		if request == "" {
+			request = promptMultiline("Enter your request:")
+			if strings.TrimSpace(request) == "" {
+				flag.Usage()
+				os.Exit(1)
+			}
+		}
+		if err := BarePhase(runner, request, *bare); err != nil {
+			errMsg(err.Error())
+			os.Exit(1)
+		}
+		banner("DONE")
+		info("Bare mode complete.")
+		return
+	}
+
+	// ── Finalize-only mode ──
+	if *finalize {
+		planPath := *planFile
+		if planPath == "" {
+			planPath = dexPath("plan.md")
+		}
+		if *baseRef == "HEAD" {
+			if out, err := exec.Command("git", "rev-parse", "HEAD").Output(); err == nil {
+				*baseRef = strings.TrimSpace(string(out))
+			}
+		}
+		if err := FinalizePhase(runner, planPath, *baseRef); err != nil {
+			errMsg(err.Error())
+			os.Exit(1)
+		}
+		banner("DONE")
+		info("Finalize complete.")
+		return
+	}
+
+	// ── Standard guided mode ──
 	if request == "" && *planFile == "" {
 		request = promptMultiline("Enter your request:")
 		if strings.TrimSpace(request) == "" {

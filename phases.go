@@ -400,3 +400,48 @@ func isCleanReview(review string) bool {
 	normalized := strings.ToUpper(strings.TrimSpace(review))
 	return strings.Contains(normalized, "ZERO ISSUES")
 }
+
+// ── Bare Mode ──
+
+func BarePhase(r *Runner, request string, maxIterations int) error {
+	banner("BARE")
+	for iteration := 1; iteration <= maxIterations; iteration++ {
+		info(fmt.Sprintf("Bare iteration %d/%d", iteration, maxIterations))
+		p := renderPrompt("bare.txt", map[string]any{
+			"Request": request,
+		})
+		if err := r.Run(p); err != nil {
+			return fmt.Errorf("bare iteration %d failed: %w", iteration, err)
+		}
+	}
+	return nil
+}
+
+// ── Finalize Phase ──
+
+func FinalizePhase(r *Runner, planPath, baseRef string) error {
+	banner("FINALIZE")
+	branchOut, err := exec.Command("git", "symbolic-ref", "--short", "HEAD").Output()
+	if err != nil || strings.TrimSpace(string(branchOut)) == "" {
+		return fmt.Errorf("finalize requires a named branch (detached HEAD is not supported)")
+	}
+	branch := strings.TrimSpace(string(branchOut))
+	headRev, _ := exec.Command("git", "rev-parse", "HEAD").Output()
+	baseRev, _ := exec.Command("git", "rev-parse", baseRef).Output()
+	if strings.TrimSpace(string(headRev)) == strings.TrimSpace(string(baseRev)) {
+		return fmt.Errorf("finalize: current branch %q points to the same commit as base ref %q; switch to a feature branch first", branch, baseRef)
+	}
+	p := renderPrompt("finalize.txt", map[string]any{
+		"PlanPath": planPath,
+		"BaseRef":  baseRef,
+	})
+	if err := r.Run(p); err != nil {
+		errMsg(fmt.Sprintf("Finalize error: %v", err))
+		choice := promptChoice("Retry or abort?", []string{"retry", "abort"})
+		if choice == "abort" {
+			return fmt.Errorf("aborted by user")
+		}
+		return r.Run(p)
+	}
+	return nil
+}
