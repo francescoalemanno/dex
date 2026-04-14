@@ -6,9 +6,33 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime/debug"
 	"strings"
 	"time"
+
+	"charm.land/lipgloss/v2"
 )
+
+var revision = "unknown"
+
+func resolveVersion() string {
+	if revision != "unknown" {
+		return revision
+	}
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return revision
+	}
+	if bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		return bi.Main.Version
+	}
+	for _, s := range bi.Settings {
+		if s.Key == "vcs.revision" && len(s.Value) >= 7 {
+			return s.Value[:7]
+		}
+	}
+	return revision
+}
 
 type Config struct {
 	CLI      string `json:"cli"`
@@ -34,8 +58,11 @@ func saveConfig(cfg Config) {
 }
 
 func main() {
+	ver := resolveVersion()
+
 	defaults := loadConfig()
 
+	showVersion := flag.Bool("version", false, "print version and exit")
 	cliName := flag.String("cli", defaults.CLI, "coding CLI to use")
 	planFile := flag.String("plan", defaults.Plan, "skip planning, use existing plan file")
 	skipReview := flag.Bool("no-review", defaults.NoReview, "skip the review phase")
@@ -54,6 +81,13 @@ func main() {
 		fmt.Fprintln(os.Stderr, strings.Join(names, ", "))
 	}
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("dex %s\n", ver)
+		return
+	}
+
+	lipgloss.Printf("%s\n\n", styleDim.Render(fmt.Sprintf("dex %s", ver)))
 
 	// Persist final flag values
 	saveConfig(Config{
