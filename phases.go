@@ -1,83 +1,40 @@
 package main
 
 import (
-	"bytes"
-	"embed"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
-	"text/template"
 )
-
-//go:embed prompts/*.txt
-var promptFS embed.FS
-
-var prompts = template.Must(
-	template.New("").
-		Funcs(template.FuncMap{"inc": func(i int) int { return i + 1 }}).
-		ParseFS(promptFS, "prompts/*.txt"),
-)
-
-func renderPrompt(name string, data any) string {
-	var buf bytes.Buffer
-	if err := prompts.ExecuteTemplate(&buf, name, data); err != nil {
-		panic(fmt.Sprintf("template %q: %v", name, err))
-	}
-	return buf.String()
-}
-
-const dexDir = ".dex"
-
-func ensureDexDir() error {
-	if err := os.MkdirAll(dexDir, 0o755); err != nil {
-		return err
-	}
-	gitignore := filepath.Join(dexDir, ".gitignore")
-	if _, err := os.Stat(gitignore); os.IsNotExist(err) {
-		return os.WriteFile(gitignore, []byte("*\n"), 0o644)
-	}
-	return nil
-}
-
-func dexPath(name string) string {
-	return filepath.Join(dexDir, name)
-}
-
-func readDexFile(name string) (string, error) {
-	data, err := os.ReadFile(dexPath(name))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", nil
-		}
-		return "", err
-	}
-	return strings.TrimSpace(string(data)), nil
-}
-
-func removeDexFile(name string) {
-	os.Remove(dexPath(name))
-}
 
 // ── Phase 1: Planning ──
 
-func PlanPhase(r *Runner, request string) (string, error) {
+func PlanPhase(r *Runner, userInput string) (string, error) {
 	banner("PLANNING")
 	if err := ensureDexDir(); err != nil {
 		return "", err
 	}
 
 	var feedbacks []string
+	request := userInput
 	planPath := dexPath("plan.md")
 
 	if existing, _ := readDexFile("plan.md"); existing != "" {
 		showMarkdown("Existing plan", existing)
-		choice := promptChoice("A plan already exists. Keep as draft, or start fresh?", []string{"keep", "fresh"})
-		if choice == "fresh" {
-			removeDexFile("plan.md")
+		choice := promptChoice("Is your request a revision of this plan, or a new plan?", []string{"revise", "new"})
+		switch choice {
+		case "new":
+			clearPlanState()
+		case "revise":
+			if orig, _ := readDexFile("request.txt"); orig != "" {
+				request = orig
+			}
+			feedbacks = loadFeedbacks()
+			feedbacks = append(feedbacks, userInput)
 		}
 	}
+
+	savePlanRequest(request)
+	saveFeedbacks(feedbacks)
 
 	for iteration := 1; ; iteration++ {
 		info(fmt.Sprintf("Planning iteration %d", iteration))
@@ -103,6 +60,7 @@ func PlanPhase(r *Runner, request string) (string, error) {
 			showBlock("Questions from CLI", questions)
 			answer := promptMultiline("Your answers:")
 			feedbacks = append(feedbacks, fmt.Sprintf("Questions:\n%s\n\nAnswers:\n%s", questions, answer))
+			saveFeedbacks(feedbacks)
 			continue
 		}
 
@@ -113,6 +71,7 @@ func PlanPhase(r *Runner, request string) (string, error) {
 		if plan == "" {
 			warn("CLI did not produce a plan or questions. Retrying...")
 			feedbacks = append(feedbacks, "You did not produce a plan in .dex/plan.md or questions in .dex/questions.md. Please do so.")
+			saveFeedbacks(feedbacks)
 			continue
 		}
 
@@ -129,6 +88,7 @@ func PlanPhase(r *Runner, request string) (string, error) {
 		case "revise":
 			feedback := promptMultiline("Your revision feedback:")
 			feedbacks = append(feedbacks, feedback)
+			saveFeedbacks(feedbacks)
 		}
 	}
 }

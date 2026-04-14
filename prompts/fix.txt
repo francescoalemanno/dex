@@ -18,7 +18,7 @@ Step 3: collect, deduplicate, verify, and fix findings.
 - Pre-existing issues such as linter errors or failed tests should also be fixed. Do not reject them just because they existed before this branch.
 - Fix all CONFIRMED issues, including bugs, tests, smells, simplifications, and documentation.
 - Run tests and linter after fixes. All tests must pass.
-- If you fixed at least one issue, commit with message: `fix: address code review findings`.
+- If you fixed at least one issue, commit with message: `fix:  <brief fix description>`.
 
 Do NOT introduce new features or refactoring beyond what the confirmed issues require.
 
