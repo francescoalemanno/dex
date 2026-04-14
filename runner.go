@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -41,6 +42,12 @@ type Runner struct {
 	cfg     CLIConfig
 	timeout time.Duration
 	label   string
+}
+
+type streamLine struct {
+	text     string
+	isStdout bool
+	err      error
 }
 
 func (r *Runner) Labeled(label string) *Runner {
@@ -114,24 +121,14 @@ func (r *Runner) runOnce(prompt string) error {
 		return err
 	}
 
-	type line struct {
-		text     string
-		isStdout bool
-	}
-
-	lines := make(chan line)
+	lines := make(chan streamLine)
+	done := make(chan struct{})
+	defer close(done)
 	var wg sync.WaitGroup
 
-	scan := func(s *bufio.Scanner, isStdout bool) {
-		defer wg.Done()
-		for s.Scan() {
-			lines <- line{text: s.Text(), isStdout: isStdout}
-		}
-	}
-
 	wg.Add(2)
-	go scan(bufio.NewScanner(stdout), true)
-	go scan(bufio.NewScanner(stderr), false)
+	go readStreamLines(stdout, true, lines, done, &wg)
+	go readStreamLines(stderr, false, lines, done, &wg)
 	go func() { wg.Wait(); close(lines) }()
 
 	timer := time.NewTimer(r.timeout)
@@ -143,7 +140,12 @@ func (r *Runner) runOnce(prompt string) error {
 			if !ok {
 				return cmd.Wait()
 			}
-			timer.Reset(r.timeout)
+			if l.err != nil {
+				killProcessTree(cmd)
+				cmd.Wait()
+				return l.err
+			}
+			resetTimer(timer, r.timeout)
 			if l.isStdout {
 				if processStdoutLine(l.text, start, r.label) {
 					lastOutput = time.Now()
@@ -164,6 +166,49 @@ func (r *Runner) runOnce(prompt string) error {
 			return fmt.Errorf("agent idle timeout after %v", r.timeout)
 		}
 	}
+}
+
+func readStreamLines(r io.Reader, isStdout bool, out chan<- streamLine, done <-chan struct{}, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	reader := bufio.NewReader(r)
+	for {
+		text, err := reader.ReadString('\n')
+		if len(text) > 0 {
+			select {
+			case out <- streamLine{
+				text:     strings.TrimRight(text, "\r\n"),
+				isStdout: isStdout,
+			}:
+			case <-done:
+				return
+			}
+		}
+		if err == nil {
+			continue
+		}
+		if err != io.EOF {
+			streamName := "stderr"
+			if isStdout {
+				streamName = "stdout"
+			}
+			select {
+			case out <- streamLine{err: fmt.Errorf("%s read: %w", streamName, err)}:
+			case <-done:
+			}
+		}
+		return
+	}
+}
+
+func resetTimer(timer *time.Timer, d time.Duration) {
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	timer.Reset(d)
 }
 
 func formatPrefix(start time.Time, label string) string {
