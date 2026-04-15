@@ -1,12 +1,12 @@
 You are in the PLANNING phase. Do NOT implement anything.
 
 The user wants:
-{{.Request}}
+{{Request}}
 
 ## Step 0: Check for Existing State
 
 Before doing ANY exploration or asking ANY question:
-1. If .dex/plan.md exists, read it in full — it is the current working draft.
+1. If {{dex_path "plan.md"}} exists, read it in full — it is the current working draft.
 2. Read the feedback section at the bottom of this prompt (if present) — it is the canonical planning-state input for this iteration.
 
 If a current draft and feedback exist, you MUST account for them before doing anything else.
@@ -21,7 +21,7 @@ If this is the first iteration or you have not yet explored:
 
 ## Step 2: Ask Clarifying Questions Only When Needed
 
-If you genuinely need user input to create a good plan, write your questions to .dex/questions.md using this exact format (one per line):
+If you genuinely need user input to create a good plan, write your questions to {{dex_path "questions.md"}} using this exact format (one per line):
 
 Q: Your question here? [Option 1 | Option 2 | Option 3]
 
@@ -33,13 +33,13 @@ Rules for questions:
 - do NOT ask about implementation details you can choose yourself
 - if a draft already exists, ask only the minimum question needed to refine it
 
-After writing .dex/questions.md, STOP immediately. Do not continue planning.
+After writing {{dex_path "questions.md"}}, STOP immediately. Do not continue planning.
 
 ## Step 3: Write the Plan
 
 When you have enough information to create a good plan:
-- if .dex/plan.md already exists, revise it in place — do not recreate from scratch
-- write the full markdown plan to .dex/plan.md
+- if {{dex_path "plan.md"}} already exists, revise it in place — do not recreate from scratch
+- write the full markdown plan to {{dex_path "plan.md"}}
 - STOP immediately after writing
 
 The plan MUST use this structure:
@@ -87,7 +87,7 @@ The plan MUST use this structure:
 
 ## Validation Before Writing
 
-Before writing .dex/plan.md, verify:
+Before writing {{dex_path "plan.md"}}, verify:
 
 **Scope & Feasibility:**
 - tasks are right-sized and executable (aim for 3-7 steps per task)
@@ -108,20 +108,20 @@ Before writing .dex/plan.md, verify:
 - new files only for genuinely new components
 - no over-engineered patterns when simpler solutions work
 
-If validation fails, fix the plan before writing .dex/plan.md.
+If validation fails, fix the plan before writing {{dex_path "plan.md"}}.
 
 CRITICAL RULES:
 - do NOT ask "should I proceed?"
-- do NOT use natural-language questions outside .dex/questions.md
+- do NOT use natural-language questions outside {{dex_path "questions.md"}}
 - do NOT write any code — only produce the plan or questions
-- when you write .dex/plan.md or .dex/questions.md, STOP immediately
-{{- if .Feedbacks}}
+- when you write {{dex_path "plan.md"}} or {{dex_path "questions.md"}}, STOP immediately
+{{#if Feedbacks}}
 
 ── Previous feedback from the user ──
-{{range $i, $f := .Feedbacks}}
-[Round {{inc $i}}]
-{{$f}}
-{{end}}
-Revise the existing .dex/plan.md based on ALL feedback above.
+{{#each Feedbacks}}
+[Round {{inc @index}}]
+{{this}}
+{{/each}}
+Revise the existing {{dex_path "plan.md"}} based on ALL feedback above.
 Do NOT ignore the current draft or start from scratch unless the feedback requires it.
-{{- end}}
+{{/if}}
