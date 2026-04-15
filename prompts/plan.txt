@@ -1,7 +1,7 @@
 You are in the PLANNING phase. Do NOT implement anything.
 
 The user wants:
-{{.Request}}
+{{Request}}
 
 ## Step 0: Check for Existing State
 
@@ -115,13 +115,13 @@ CRITICAL RULES:
 - do NOT use natural-language questions outside .dex/questions.md
 - do NOT write any code — only produce the plan or questions
 - when you write .dex/plan.md or .dex/questions.md, STOP immediately
-{{- if .Feedbacks}}
+{{#if Feedbacks}}
 
 ── Previous feedback from the user ──
-{{range $i, $f := .Feedbacks}}
-[Round {{inc $i}}]
-{{$f}}
-{{end}}
+{{#each Feedbacks}}
+[Round {{inc @index}}]
+{{this}}
+{{/each}}
 Revise the existing .dex/plan.md based on ALL feedback above.
 Do NOT ignore the current draft or start from scratch unless the feedback requires it.
-{{- end}}
+{{/if}}

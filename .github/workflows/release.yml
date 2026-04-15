@@ -7,22 +7,32 @@ on:
 
 permissions:
   contents: write
-  packages: write
 
 jobs:
-  release:
-    runs-on: ubuntu-latest
+  goreleaser:
+    runs-on: macos-14
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-go@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: mlugg/setup-zig@v1
+
+      - name: Install cargo-zigbuild
+        run: cargo install --locked cargo-zigbuild
+
+      - name: Run tests
+        run: cargo test --locked
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v7
         with:
-          go-version: stable
-      - uses: goreleaser/goreleaser-action@v7
-        with:
-          version: latest
+          distribution: goreleaser
+          version: "~> v2"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

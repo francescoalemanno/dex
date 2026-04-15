@@ -1,15 +1,40 @@
+version: 2
+
+project_name: dex
+
+before:
+  hooks:
+    - cargo fetch --locked
+
 builds:
-  - ldflags:
-      - -X main.revision={{.Version}}
-    env:
-      - CGO_ENABLED=0
-    goos: [linux, darwin, windows]
-    goarch: [amd64, arm64]
+  - id: dex
+    builder: rust
+    binary: dex
+    flags:
+      - --release
+      - --locked
+      - --bin=dex
+    targets:
+      - x86_64-unknown-linux-gnu
+      - aarch64-unknown-linux-gnu
+      - x86_64-apple-darwin
+      - aarch64-apple-darwin
+      - x86_64-pc-windows-gnu
+      - aarch64-pc-windows-gnullvm
 
 archives:
-  - format_overrides:
+  - ids:
+      - dex
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats:
+      - tar.gz
+    format_overrides:
       - goos: windows
-        format: zip
+        formats:
+          - zip
+
+checksum:
+  name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
 
 changelog:
   sort: asc

@@ -1,22 +1,31 @@
-Best-effort finalize step for: implementation of plan at `{{.PlanPath}}`
+Best-effort finalize step for the implementation plan at `{{PlanPath}}`
 
-Rebase your commits onto the latest `{{.BaseRef}}` and organize them for merge.
+Finalize the current feature branch against `{{FinalizeTarget}}`.
+Do not invent a different base branch. Use `{{FinalizeTarget}}` exactly as given.
 
 Steps:
-1. Fetch latest changes: `git fetch origin`
-2. Rebase onto `{{.BaseRef}}`:
-   - run `git rebase origin/{{.BaseRef}}`
+1. Inspect branch status first:
+   - run `git status --short --branch`
+{{#if FinalizeNeedsFetch}}
+2. Refresh the remote-tracking base ref:
+   - run `git fetch origin`
+{{else}}
+2. No fetch is required for the local base ref `{{FinalizeTarget}}`.
+{{/if}}
+3. Rebase onto `{{FinalizeTarget}}`:
+   - run `git rebase {{FinalizeTarget}}`
    - if conflicts occur, resolve them and continue
    - if rebase fails completely, abort with `git rebase --abort`
-3. Review commit history:
-   - run `git log origin/{{.BaseRef}}..HEAD --oneline`
+4. Review commit history:
+   - run `git log {{FinalizeTarget}}..HEAD --oneline`
    - if there are many small fix commits, consider squashing them while keeping meaningful boundaries
-4. Verify the branch is ready:
+5. Verify the branch is ready:
    - run the project's most relevant tests
    - run the linter if applicable
 
 Constraints:
 - This step is best-effort.
+- This command is meant to run after implementation is already committed on your feature branch.
 - Do not discard work.
 - Do not reset the branch hard.
 - If cleanup or rebase fails, explain what happened in plain text but still finish successfully.
