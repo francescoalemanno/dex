@@ -129,6 +129,7 @@ impl Runner {
 
     pub fn run(&self, prompt: &str) -> Result<(), String> {
         let mut delay = Duration::from_secs(1);
+        let mut last_err = String::new();
         for attempt in 0..=5 {
             if attempt > 0 {
                 warn(&format!(
@@ -146,10 +147,13 @@ impl Runner {
             }
             match self.run_once(prompt) {
                 Ok(()) => return Ok(()),
-                Err(e) => err_msg(&format!("Agent failed: {}", e)),
+                Err(e) => {
+                    err_msg(&format!("Agent failed: {}", e));
+                    last_err = e;
+                }
             }
         }
-        Err("agent failed after 5 retries".to_string())
+        Err(format!("agent failed after 5 retries: {}", last_err))
     }
 
     fn run_once(&self, prompt: &str) -> Result<(), String> {

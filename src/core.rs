@@ -9,6 +9,7 @@ const DEX_DIR: &str = ".dex";
 fn template_engine() -> Handlebars<'static> {
     let mut hbs = Handlebars::new();
     hbs.set_strict_mode(false);
+    hbs.register_escape_fn(handlebars::no_escape);
     hbs.register_helper(
         "inc",
         Box::new(

@@ -137,11 +137,22 @@ fn editor_cmd() -> String {
 }
 
 fn edit_plan_in_editor(plan: &str) -> Result<Option<String>, String> {
-    let tmp_path = std::env::temp_dir().join("dex-plan-edit.md");
+    let tmp_path = std::env::temp_dir().join(format!(
+        "dex-plan-{}-{}.md",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
     fs::write(&tmp_path, plan).map_err(|e| format!("write temp file: {}", e))?;
 
     let editor = editor_cmd();
-    let status = Command::new(&editor)
+    let mut parts = editor.split_whitespace();
+    let cmd = parts.next().unwrap_or("vi");
+    let editor_args: Vec<&str> = parts.collect();
+    let status = Command::new(cmd)
+        .args(&editor_args)
         .arg(&tmp_path)
         .stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::inherit())

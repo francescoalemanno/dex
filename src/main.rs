@@ -88,12 +88,6 @@ fn main() {
     let mut stream = termcolor::StandardStream::stderr(termcolor::ColorChoice::Auto);
     write_dim(&mut stream, &format!("dex {}\n", REVISION));
 
-    // Persist stable preferences only. Runtime HEAD snapshots are transient.
-    save_config(&Config {
-        cli: cli_name.clone(),
-        base_ref: persisted_base_ref(&base_ref),
-    });
-
     let runner = match Runner::new(&cli_name, timeout) {
         Ok(r) => r,
         Err(e) => {
@@ -101,6 +95,12 @@ fn main() {
             exit(1);
         }
     };
+
+    // Persist stable preferences only after validating the CLI name.
+    save_config(&Config {
+        cli: cli_name.clone(),
+        base_ref: persisted_base_ref(&base_ref),
+    });
 
     // ── Bare mode ──
     if bare > 0 {
@@ -159,6 +159,13 @@ fn main() {
         plan_file.clone()
     };
 
+    // Snapshot the review base BEFORE implementation so review diffs cover impl commits.
+    let review_ctx = if !skip_review {
+        Some(resolve_review_context(&base_ref))
+    } else {
+        None
+    };
+
     // Phase 2: Implementation
     if let Err(e) = impl_phase(&runner, &plan_path) {
         err_msg(&e.to_string());
@@ -166,8 +173,7 @@ fn main() {
     }
 
     // Phase 3: Review
-    if !skip_review {
-        let review_ctx = resolve_review_context(&base_ref);
+    if let Some(review_ctx) = review_ctx {
         if !review_ctx.git_available {
             warn(
                 "Git metadata is unavailable; review will run in best-effort mode without git diff context.",
