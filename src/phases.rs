@@ -277,12 +277,12 @@ static BROAD_REVIEWERS: &[ReviewRole] = &[
 
 static FOCUSED_REVIEWERS: &[ReviewRole] = &[
     ReviewRole {
-        name: "quality",
+        name: "critical-correctness",
         scope: "critical and major correctness, security, reliability",
         prompt: "Review code only for critical and major bugs, security issues, and correctness problems.\nIgnore style issues and minor suggestions.\nFocus on:\n- logic errors that cause incorrect behavior\n- security vulnerabilities\n- data loss or corruption risks\n- concurrency bugs",
     },
     ReviewRole {
-        name: "implementation",
+        name: "critical-coverage",
         scope: "critical and major goal coverage, integration, completeness",
         prompt: "Review whether any critical or major requirement-coverage or integration issues remain.\nIgnore style issues and minor suggestions.\nFocus on:\n- requirements that are not implemented at all\n- integration bugs between components\n- critical logic flow errors",
     },
@@ -467,6 +467,22 @@ fn run_fixer(
 fn is_clean_review(review: &str) -> bool {
     let normalized = review.trim().to_uppercase();
     normalized.contains("- ZERO FINDINGS")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BROAD_REVIEWERS, FOCUSED_REVIEWERS};
+
+    #[test]
+    fn focused_reviewer_names_do_not_overlap_with_broad_reviewers() {
+        for focused in FOCUSED_REVIEWERS {
+            for broad in BROAD_REVIEWERS {
+                assert_ne!(focused.name, broad.name);
+                assert!(!focused.name.contains(broad.name));
+                assert!(!broad.name.contains(focused.name));
+            }
+        }
+    }
 }
 
 // ── Bare Mode ──
