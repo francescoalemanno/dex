@@ -87,61 +87,30 @@ pub static CLI_CONFIGS: &[(&str, CLIConfig)] = &[
     ),
 ];
 
-fn builtin_agent_names() -> Vec<&'static str> {
-    CLI_CONFIGS.iter().map(|(name, _)| *name).collect()
-}
-
-fn dex_available_agents_with<F>(mut is_available: F) -> Vec<&'static str>
-where
-    F: FnMut(&str) -> bool,
-{
-    CLI_CONFIGS
+pub fn dex_available_agents() -> Vec<&'static str> {
+        CLI_CONFIGS
         .iter()
-        .filter_map(|(name, config)| is_available(config.cmd).then_some(*name))
+        .filter_map(|(name, config)| which::which(config.cmd).is_ok().then_some(*name))
         .collect()
 }
 
-pub fn dex_available_agents() -> Vec<&'static str> {
-    dex_available_agents_with(|cmd| which::which(cmd).is_ok())
-}
-
-fn validate_cli_name_with_available(name: &str, available: &[&str]) -> Result<(), String> {
-    let is_builtin = CLI_CONFIGS.iter().any(|(candidate, _)| *candidate == name);
+pub fn validate_cli_name(name: &str) -> Result<(), String> {
+    let agents = dex_available_agents();
+    let is_builtin = agents.iter().any(|(candidate)| *candidate == name);
     if !is_builtin {
-        let supported = builtin_agent_names().join(", ");
-        return Err(match available {
-            [] => format!(
+        let supported = agents.join(", ");
+        return Err(match agents.len() {
+            0 => format!(
                 "unknown CLI {:?}; supported agents: {}; none are currently available in PATH",
                 name, supported
             ),
             _ => format!(
                 "unknown CLI {:?}; choose one of the agents currently available in PATH: {}",
-                name,
-                available.join(", ")
+                name, agents.join(", ")
             ),
         });
     }
-
-    if available.iter().any(|candidate| *candidate == name) {
-        return Ok(());
-    }
-
-    Err(match available {
-        [] => format!(
-            "CLI {:?} is supported but not currently available in PATH; no supported agents were found",
-            name
-        ),
-        _ => format!(
-            "CLI {:?} is not currently available in PATH; available agents: {}",
-            name,
-            available.join(", ")
-        ),
-    })
-}
-
-pub fn validate_cli_name(name: &str) -> Result<(), String> {
-    let available = dex_available_agents();
-    validate_cli_name_with_available(name, &available)
+    return Ok(());
 }
 
 pub struct Runner {
@@ -320,7 +289,7 @@ impl Runner {
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    kill_process(&mut child);
+                    let _ = child.kill();
                     let _ = child.wait();
                     return Err(format!("agent idle timeout after {:?}", self.timeout));
                 }
@@ -338,37 +307,6 @@ impl Runner {
             Ok(())
         } else {
             Err(format!("exit code: {}", status))
-        }
-    }
-}
-
-fn kill_process(child: &mut std::process::Child) {
-    #[cfg(unix)]
-    {
-        let pid = child.id() as i32;
-        let _ = nix_kill_pg(pid);
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = child.kill();
-    }
-}
-
-#[cfg(unix)]
-fn nix_kill_pg(pid: i32) -> Result<(), ()> {
-    // Use libc::kill with negative pid for process group
-    // This is safe: kill() is a POSIX function, not unsafe Rust memory access.
-    // We wrap it because std::process doesn't expose process group killing.
-    let ret = std::process::Command::new("kill")
-        .args(["--", &format!("-{}", pid)])
-        .status();
-    match ret {
-        Ok(s) if s.success() => Ok(()),
-        _ => {
-            let _ = std::process::Command::new("kill")
-                .args([&pid.to_string()])
-                .status();
-            Ok(())
         }
     }
 }
@@ -430,37 +368,5 @@ fn walk_json(v: &Value, texts: &mut Vec<String>) {
             }
         }
         _ => {}
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{dex_available_agents_with, validate_cli_name_with_available};
-
-    #[test]
-    fn filters_builtins_by_runtime_availability() {
-        let available = dex_available_agents_with(|cmd| matches!(cmd, "codex" | "gemini"));
-
-        assert_eq!(available, vec!["codex", "gemini"]);
-    }
-
-    #[test]
-    fn rejects_supported_but_missing_agent() {
-        let err = validate_cli_name_with_available("claude", &["codex", "gemini"]).unwrap_err();
-
-        assert_eq!(
-            err,
-            "CLI \"claude\" is not currently available in PATH; available agents: codex, gemini"
-        );
-    }
-
-    #[test]
-    fn rejects_unknown_agent_with_available_choices() {
-        let err = validate_cli_name_with_available("unknown", &["codex", "gemini"]).unwrap_err();
-
-        assert_eq!(
-            err,
-            "unknown CLI \"unknown\"; choose one of the agents currently available in PATH: codex, gemini"
-        );
     }
 }
