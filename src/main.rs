@@ -285,7 +285,7 @@ fn run_guided_workflow(
 }
 
 fn normalize_active_cli(preferred: &str, available: &[&str]) -> Result<String, String> {
-    if available.iter().any(|candidate| *candidate == preferred) {
+    if available.contains(&preferred) {
         return Ok(preferred.to_string());
     }
 

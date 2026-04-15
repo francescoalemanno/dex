@@ -3,8 +3,8 @@ use std::fs;
 use std::process::Command;
 
 use crate::core::{
-    dex_path, ensure_dex_dir, load_feedbacks, read_dex_file, remove_dex_file,
-    render_prompt, save_feedbacks, save_plan_request, reset_dex_runtime_artifacts
+    dex_path, ensure_dex_dir, load_feedbacks, read_dex_file, remove_dex_file, render_prompt,
+    reset_dex_runtime_artifacts, save_feedbacks, save_plan_request,
 };
 use crate::plan::{all_tasks_done, next_open_task};
 use crate::runner::Runner;
@@ -426,6 +426,7 @@ pub fn review_phase(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_review_fanout(
     r: &Runner,
     plan_path: &str,

@@ -88,7 +88,7 @@ pub static CLI_CONFIGS: &[(&str, CLIConfig)] = &[
 ];
 
 pub fn dex_available_agents() -> Vec<&'static str> {
-        CLI_CONFIGS
+    CLI_CONFIGS
         .iter()
         .filter_map(|(name, config)| which::which(config.cmd).is_ok().then_some(*name))
         .collect()
@@ -96,7 +96,7 @@ pub fn dex_available_agents() -> Vec<&'static str> {
 
 pub fn validate_cli_name(name: &str) -> Result<(), String> {
     let agents = dex_available_agents();
-    let is_builtin = agents.iter().any(|(candidate)| *candidate == name);
+    let is_builtin = agents.contains(&name);
     if !is_builtin {
         let supported = agents.join(", ");
         return Err(match agents.len() {
@@ -106,11 +106,12 @@ pub fn validate_cli_name(name: &str) -> Result<(), String> {
             ),
             _ => format!(
                 "unknown CLI {:?}; choose one of the agents currently available in PATH: {}",
-                name, agents.join(", ")
+                name,
+                agents.join(", ")
             ),
         });
     }
-    return Ok(());
+    Ok(())
 }
 
 pub struct Runner {
