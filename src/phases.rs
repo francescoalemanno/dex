@@ -3,8 +3,8 @@ use std::fs;
 use std::process::Command;
 
 use crate::core::{
-    clear_plan_state, dex_path, ensure_dex_dir, load_feedbacks, read_dex_file, remove_dex_file,
-    render_prompt, save_feedbacks, save_plan_request,
+    dex_path, ensure_dex_dir, load_feedbacks, read_dex_file, remove_dex_file,
+    render_prompt, save_feedbacks, save_plan_request, reset_dex_runtime_artifacts
 };
 use crate::plan::{all_tasks_done, next_open_task};
 use crate::runner::Runner;
@@ -84,7 +84,7 @@ fn prepare_standard_plan_seed(user_input: &str) -> Result<Option<PlanningSeed>, 
         created_new_plan =
             should_refresh_review_base_ref_after_planning(true, Some(choice.as_str()));
         match choice.as_str() {
-            "new" => clear_plan_state(),
+            "new" => reset_dex_runtime_artifacts(),
             "revise" => {
                 if let Some(orig) = read_dex_file("request.txt") {
                     request = orig;

@@ -131,6 +131,7 @@ pub fn load_feedbacks() -> Vec<String> {
 }
 
 pub fn reset_dex_runtime_artifacts() {
+    remove_dex_file("plan.md");
     remove_dex_file("request.txt");
     remove_dex_file("feedbacks.json");
     remove_dex_file("questions.md");
@@ -151,11 +152,6 @@ pub fn reset_dex_runtime_artifacts() {
             }
         }
     }
-}
-
-pub fn clear_plan_state() {
-    remove_dex_file("plan.md");
-    reset_dex_runtime_artifacts();
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
