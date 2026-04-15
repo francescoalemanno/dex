@@ -120,8 +120,9 @@ fn main() {
         positionals.join(" ")
     };
     let default_plan_path = dex_path("plan.md");
-    let resume_existing_plan =
-        imported_plan.is_none() && should_resume_existing_plan(&request, &default_plan_path);
+    let resume_existing_plan = imported_plan.is_none()
+        && request.trim().is_empty()
+        && Path::new(&default_plan_path).exists();
 
     let mut stream = termcolor::StandardStream::stderr(termcolor::ColorChoice::Auto);
     write_dim(&mut stream, &format!("dex {}\n", REVISION));
@@ -283,10 +284,6 @@ fn run_guided_workflow(
     )
 }
 
-fn should_resume_existing_plan(request: &str, plan_path: &str) -> bool {
-    request.trim().is_empty() && Path::new(plan_path).exists()
-}
-
 fn normalize_active_cli(preferred: &str, available: &[&str]) -> Result<String, String> {
     if available.iter().any(|candidate| *candidate == preferred) {
         return Ok(preferred.to_string());
@@ -389,19 +386,8 @@ fn available_agents_help_section_with(available: &[&str]) -> String {
 mod tests {
     use super::{
         available_agents_help_section_with, normalize_active_cli, parse_finalize_target,
-        render_help_output_with, should_resume_existing_plan, HELP_EXAMPLES_SECTION,
+        render_help_output_with, HELP_EXAMPLES_SECTION,
     };
-
-    #[test]
-    fn resumes_only_when_request_is_empty_and_plan_exists() {
-        assert!(should_resume_existing_plan("", "."));
-        assert!(should_resume_existing_plan("   ", "."));
-        assert!(!should_resume_existing_plan("add logging", "."));
-        assert!(!should_resume_existing_plan(
-            "",
-            "./this-plan-path-should-not-exist"
-        ));
-    }
 
     #[test]
     fn finalize_requires_exactly_one_target() {

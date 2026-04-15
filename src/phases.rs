@@ -219,12 +219,6 @@ fn run_planning_loop(
     }
 }
 
-fn editor_cmd() -> String {
-    std::env::var("VISUAL")
-        .or_else(|_| std::env::var("EDITOR"))
-        .unwrap_or_else(|_| "vi".to_string())
-}
-
 fn edit_plan_in_editor(plan: &str) -> Result<Option<String>, String> {
     let tmp_path = std::env::temp_dir().join(format!(
         "dex-plan-{}-{}.md",
@@ -236,7 +230,9 @@ fn edit_plan_in_editor(plan: &str) -> Result<Option<String>, String> {
     ));
     fs::write(&tmp_path, plan).map_err(|e| format!("write temp file: {}", e))?;
 
-    let editor = editor_cmd();
+    let editor = std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_else(|_| "vi".to_string());
     let mut parts = editor.split_whitespace();
     let cmd = parts.next().unwrap_or("vi");
     let editor_args: Vec<&str> = parts.collect();
