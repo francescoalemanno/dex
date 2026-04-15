@@ -97,6 +97,30 @@ pub fn remove_dex_file(name: &str) {
     fs::remove_file(dex_path(name)).ok();
 }
 
+fn is_review_artifact(name: &str) -> bool {
+    name.starts_with("review-") && name.ends_with(".md")
+}
+
+fn remove_review_artifacts() {
+    let entries = match fs::read_dir(DEX_DIR) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if is_review_artifact(name) {
+            fs::remove_file(path).ok();
+        }
+    }
+}
+
 pub fn load_review_base_ref() -> Option<String> {
     read_dex_file(REVIEW_BASE_REF_FILE)
 }
@@ -130,12 +154,17 @@ pub fn load_feedbacks() -> Vec<String> {
     }
 }
 
-pub fn clear_plan_state() {
-    remove_dex_file("plan.md");
+pub fn reset_dex_runtime_artifacts() {
     remove_dex_file("request.txt");
     remove_dex_file("feedbacks.json");
     remove_dex_file("questions.md");
     remove_dex_file(REVIEW_BASE_REF_FILE);
+    remove_review_artifacts();
+}
+
+pub fn clear_plan_state() {
+    remove_dex_file("plan.md");
+    reset_dex_runtime_artifacts();
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -167,7 +196,7 @@ pub fn save_config(cfg: &Config) {
 
 #[cfg(test)]
 mod tests {
-    use super::{dex_path, render_prompt, Config};
+    use super::{dex_path, is_review_artifact, render_prompt, Config};
 
     #[test]
     fn plan_prompt_renders_internal_state_paths_via_helper() {
@@ -209,5 +238,13 @@ mod tests {
         let cfg: Config = serde_json::from_str(r#"{"cli":"claude","base_ref":"main"}"#).unwrap();
 
         assert_eq!(cfg.cli, "claude");
+    }
+
+    #[test]
+    fn review_artifact_matcher_is_precise() {
+        assert!(is_review_artifact("review-quality.md"));
+        assert!(is_review_artifact("review-critical-coverage.md"));
+        assert!(!is_review_artifact("review-quality.txt"));
+        assert!(!is_review_artifact("plan.md"));
     }
 }

@@ -23,6 +23,19 @@ pub struct PlanPhaseResult {
     pub created_new_plan: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanPhaseMode {
+    Standard,
+    ReviseImportedDraft,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlanningSeed {
+    request: String,
+    feedbacks: Vec<String>,
+    created_new_plan: bool,
+}
+
 fn should_refresh_review_base_ref_after_planning(
     has_existing_plan: bool,
     choice: Option<&str>,
@@ -30,13 +43,37 @@ fn should_refresh_review_base_ref_after_planning(
     !has_existing_plan || matches!(choice, Some("new"))
 }
 
-pub fn plan_phase(r: &Runner, user_input: &str) -> Result<Option<PlanPhaseResult>, String> {
+pub fn plan_phase(
+    r: &Runner,
+    user_input: &str,
+    mode: PlanPhaseMode,
+) -> Result<Option<PlanPhaseResult>, String> {
     banner("PLANNING");
     ensure_dex_dir();
 
+    let plan_path = dex_path("plan.md");
+    let seed = match mode {
+        PlanPhaseMode::Standard => prepare_standard_plan_seed(user_input)?,
+        PlanPhaseMode::ReviseImportedDraft => prepare_imported_plan_seed(user_input)?,
+    };
+    let PlanningSeed {
+        request,
+        feedbacks,
+        created_new_plan,
+    } = match seed {
+        Some(seed) => seed,
+        None => return Ok(None),
+    };
+
+    save_plan_request(&request);
+    save_feedbacks(&feedbacks);
+
+    run_planning_loop(r, request, feedbacks, plan_path, created_new_plan)
+}
+
+fn prepare_standard_plan_seed(user_input: &str) -> Result<Option<PlanningSeed>, String> {
     let mut feedbacks: Vec<String> = Vec::new();
     let mut request = user_input.to_string();
-    let plan_path = dex_path("plan.md");
     let existing_plan = read_dex_file("plan.md");
     let mut created_new_plan =
         should_refresh_review_base_ref_after_planning(existing_plan.is_some(), None);
@@ -63,9 +100,35 @@ pub fn plan_phase(r: &Runner, user_input: &str) -> Result<Option<PlanPhaseResult
         }
     }
 
-    save_plan_request(&request);
-    save_feedbacks(&feedbacks);
+    Ok(Some(PlanningSeed {
+        request,
+        feedbacks,
+        created_new_plan,
+    }))
+}
 
+fn prepare_imported_plan_seed(user_input: &str) -> Result<Option<PlanningSeed>, String> {
+    if read_dex_file("plan.md").is_none() {
+        return Err(format!(
+            "imported plan revision requested, but {} is missing",
+            dex_path("plan.md")
+        ));
+    }
+
+    Ok(Some(PlanningSeed {
+        request: user_input.to_string(),
+        feedbacks: Vec::new(),
+        created_new_plan: true,
+    }))
+}
+
+fn run_planning_loop(
+    r: &Runner,
+    request: String,
+    mut feedbacks: Vec<String>,
+    plan_path: String,
+    created_new_plan: bool,
+) -> Result<Option<PlanPhaseResult>, String> {
     let mut iteration = 1;
     loop {
         info(&format!("Planning iteration {}", iteration));
@@ -122,7 +185,7 @@ pub fn plan_phase(r: &Runner, user_input: &str) -> Result<Option<PlanPhaseResult
             "accept" => {
                 info("Plan accepted!");
                 return Ok(Some(PlanPhaseResult {
-                    plan_path,
+                    plan_path: plan_path.clone(),
                     created_new_plan,
                 }));
             }
@@ -510,7 +573,10 @@ mod tests {
     #[test]
     fn review_base_ref_refreshes_only_for_new_plans() {
         assert!(should_refresh_review_base_ref_after_planning(false, None));
-        assert!(should_refresh_review_base_ref_after_planning(true, Some("new")));
+        assert!(should_refresh_review_base_ref_after_planning(
+            true,
+            Some("new")
+        ));
         assert!(!should_refresh_review_base_ref_after_planning(
             true,
             Some("revise")

@@ -93,6 +93,18 @@ dex --cli claude "add structured JSON logging to the worker package, \
 dex
 ```
 
+**Import a prepared plan and execute it:**
+
+```bash
+dex --plan myplan.md
+```
+
+**Import a plan draft, adapt it to a new request, then approve the revision:**
+
+```bash
+dex --plan myplan.md "take this plan for a Go tool, but implement it in Rust"
+```
+
 **Raw agent loop for open-ended work (10 iterations):**
 
 ```bash
@@ -151,6 +163,7 @@ Then a focused review loop runs with only quality and implementation reviewers f
 | `--timeout <seconds>` | `1200` | Kill the agent after this many idle seconds |
 | `--bare <iterations>` | | Bare mode: send the request straight to the agent for N iterations |
 | `--finalize` | `false` | Rebase, tidy commits, and rerun checks against the user-provided target |
+| `--plan <file.md>` | | Import a markdown plan; with an extra request, revise the imported draft before execution |
 
 `--cli` persists across runs in `.dex/config.json`, so you don't have to repeat `--cli claude` every time.
 

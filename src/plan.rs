@@ -73,9 +73,33 @@ pub fn next_open_task(path: &str) -> Result<Option<TaskGroup>, String> {
     Ok(groups.into_iter().find(|g| !g.is_complete()))
 }
 
+pub fn validate_candidate_plan(path: &str) -> Result<(), String> {
+    match next_open_task(path)? {
+        Some(_) => Ok(()),
+        None => Err(format!(
+            "candidate plan {:?} does not contain any open task",
+            path
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    fn write_temp_plan(contents: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "dex-plan-test-{}-{}.md",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        fs::write(&path, contents).unwrap();
+        path
+    }
 
     #[test]
     fn test_parse_tasks() {
@@ -112,5 +136,29 @@ mod tests {
         let groups = parse_tasks(plan);
         assert_eq!(groups.len(), 1);
         assert!(groups[0].is_complete());
+    }
+
+    #[test]
+    fn candidate_plan_validation_accepts_open_tasks() {
+        let path = write_temp_plan("## Build\n- [ ] implement feature\n");
+        let result = validate_candidate_plan(path.to_str().unwrap());
+        let _ = fs::remove_file(&path);
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn candidate_plan_validation_rejects_completed_plans() {
+        let path = write_temp_plan("## Done\n- [x] already finished\n");
+        let result = validate_candidate_plan(path.to_str().unwrap());
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(
+            result.unwrap_err(),
+            format!(
+                "candidate plan {:?} does not contain any open task",
+                path.to_str().unwrap()
+            )
+        );
     }
 }

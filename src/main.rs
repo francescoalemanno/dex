@@ -5,16 +5,38 @@ mod runner;
 mod ui;
 
 use argh::FromArgs;
+use std::fs;
 use std::path::Path;
 use std::process::{exit, Command};
 use std::time::Duration;
 
-use crate::core::{load_config, load_review_base_ref, save_config, save_review_base_ref, Config};
-use crate::phases::{bare_phase, finalize_phase, impl_phase, plan_phase, review_phase};
+use crate::core::{
+    dex_path, ensure_dex_dir, load_config, load_review_base_ref, reset_dex_runtime_artifacts,
+    save_config, save_review_base_ref, Config,
+};
+use crate::phases::{
+    bare_phase, finalize_phase, impl_phase, plan_phase, review_phase, PlanPhaseMode,
+};
+use crate::plan::validate_candidate_plan;
 use crate::runner::Runner;
-use crate::ui::{banner, err_msg, info, prompt_multiline, warn, write_dim};
+use crate::ui::{banner, err_msg, info, prompt_choice, prompt_multiline, warn, write_dim};
 
 const REVISION: &str = env!("CARGO_PKG_VERSION");
+const IMPORT_PLAN_CHOICE_PROMPT: &str =
+    "A plan already exists in .dex/plan.md. Should dex replace it or quit?";
+const HELP_EXAMPLES_SECTION: &str = concat!(
+    "\nExamples:\n",
+    "  Normal guided run:\n",
+    "    dex \"add structured logging to the API and update tests\"\n",
+    "  Resume a saved plan:\n",
+    "    dex\n",
+    "  Execute an imported plan:\n",
+    "    dex --plan myplan.md\n",
+    "  Open-ended bare loop:\n",
+    "    dex --bare 10 \"explore the repo and improve test coverage\"\n",
+    "  Finalize a feature branch:\n",
+    "    dex --finalize main\n",
+);
 
 /// dex — AI-powered development workflow
 ///
@@ -41,6 +63,10 @@ struct Args {
     /// finalize an existing feature branch against a user-provided rebase target
     #[argh(switch)]
     finalize: bool,
+
+    /// import a markdown plan; with an extra request, revise the imported draft before execution
+    #[argh(option, arg_name = "file.md")]
+    plan: Option<String>,
 
     /// request text, or the rebase target when used with --finalize
     #[argh(positional, greedy)]
@@ -76,14 +102,26 @@ fn main() {
     let timeout = Duration::from_secs(args.timeout);
     let bare = args.bare;
     let do_finalize = args.finalize;
+    let imported_plan = args.plan;
     let positionals = args.request;
+
+    if imported_plan.is_some() && bare > 0 {
+        err_msg("--plan cannot be used together with --bare");
+        exit(1);
+    }
+    if imported_plan.is_some() && do_finalize {
+        err_msg("--plan cannot be used together with --finalize");
+        exit(1);
+    }
+
     let mut request = if do_finalize {
         String::new()
     } else {
         positionals.join(" ")
     };
-    let plan_path = crate::core::dex_path("plan.md");
-    let resume_existing_plan = should_resume_existing_plan(&request, &plan_path);
+    let default_plan_path = dex_path("plan.md");
+    let resume_existing_plan =
+        imported_plan.is_none() && should_resume_existing_plan(&request, &default_plan_path);
 
     let mut stream = termcolor::StandardStream::stderr(termcolor::ColorChoice::Auto);
     write_dim(&mut stream, &format!("dex {}\n", REVISION));
@@ -127,7 +165,7 @@ fn main() {
                 exit(1);
             }
         };
-        if let Err(e) = finalize_phase(&runner, &plan_path, &finalize_target) {
+        if let Err(e) = finalize_phase(&runner, &default_plan_path, &finalize_target) {
             err_msg(&e.to_string());
             exit(1);
         }
@@ -137,7 +175,7 @@ fn main() {
     }
 
     // ── Standard guided mode ──
-    if request.trim().is_empty() && !resume_existing_plan {
+    if imported_plan.is_none() && request.trim().is_empty() && !resume_existing_plan {
         request = prompt_multiline("Enter your request:");
         if request.trim().is_empty() {
             exit(1);
@@ -145,11 +183,40 @@ fn main() {
     }
 
     // Phase 1: Planning
-    let (plan_path, refresh_review_base_ref) = if resume_existing_plan {
-        info(&format!("Resuming existing plan at {}", plan_path));
-        (plan_path, false)
+    let (plan_path, refresh_review_base_ref) = if let Some(candidate_path) =
+        imported_plan.as_deref()
+    {
+        let imported_plan_path = match import_plan(candidate_path) {
+            Ok(Some(plan_path)) => plan_path,
+            Ok(None) => exit(0),
+            Err(e) => {
+                err_msg(&e);
+                exit(1);
+            }
+        };
+
+        if request.trim().is_empty() {
+            info(&format!(
+                "Starting from imported plan at {}",
+                imported_plan_path
+            ));
+            (imported_plan_path, true)
+        } else {
+            info("Imported plan will be revised against the provided request before execution.");
+            match plan_phase(&runner, &request, PlanPhaseMode::ReviseImportedDraft) {
+                Ok(Some(result)) => (result.plan_path, result.created_new_plan),
+                Ok(None) => exit(0),
+                Err(e) => {
+                    err_msg(&e.to_string());
+                    exit(1);
+                }
+            }
+        }
+    } else if resume_existing_plan {
+        info(&format!("Resuming existing plan at {}", default_plan_path));
+        (default_plan_path, false)
     } else {
-        match plan_phase(&runner, &request) {
+        match plan_phase(&runner, &request, PlanPhaseMode::Standard) {
             Ok(Some(result)) => (result.plan_path, result.created_new_plan),
             Ok(None) => exit(0),
             Err(e) => {
@@ -159,36 +226,61 @@ fn main() {
         }
     };
 
-    // Snapshot the review base BEFORE implementation so review diffs cover impl commits.
-    if refresh_review_base_ref {
-        ensure_review_base_ref_snapshot();
-    }
-
-    // Phase 2: Implementation
-    if let Err(e) = impl_phase(&runner, &plan_path) {
-        err_msg(&e.to_string());
-        exit(1);
-    }
-
-    // Phase 3: Review
-    let review_ctx = load_review_context();
-    if !review_ctx.git_available {
-        warn(
-            "Review base metadata is unavailable; review will run in best-effort mode without git diff context.",
-        );
-    }
-    if let Err(e) = review_phase(
-        &runner,
-        &plan_path,
-        review_ctx.base_ref.as_deref(),
-        review_ctx.git_available,
-    ) {
+    if let Err(e) = run_guided_workflow(&runner, &plan_path, refresh_review_base_ref) {
         err_msg(&e.to_string());
         exit(1);
     }
 
     banner("DONE");
     info("All phases complete.");
+}
+
+fn import_plan(candidate_path: &str) -> Result<Option<String>, String> {
+    validate_candidate_plan(candidate_path)?;
+    let imported_plan = fs::read_to_string(candidate_path)
+        .map_err(|e| format!("read imported plan {:?}: {}", candidate_path, e))?;
+    let plan_path = dex_path("plan.md");
+
+    if Path::new(&plan_path).exists() {
+        let choice = prompt_choice(IMPORT_PLAN_CHOICE_PROMPT, &["replace", "quit"]);
+        if choice == "quit" {
+            info("Exiting without changing the current plan.");
+            return Ok(None);
+        }
+    }
+
+    ensure_dex_dir();
+    reset_dex_runtime_artifacts();
+    fs::write(&plan_path, imported_plan)
+        .map_err(|e| format!("write imported plan to {}: {}", plan_path, e))?;
+    Ok(Some(plan_path))
+}
+
+fn run_guided_workflow(
+    runner: &Runner,
+    plan_path: &str,
+    refresh_review_base_ref: bool,
+) -> Result<(), String> {
+    // Snapshot the review base BEFORE implementation so review diffs cover impl commits.
+    if refresh_review_base_ref {
+        ensure_review_base_ref_snapshot();
+    }
+
+    impl_phase(runner, plan_path)?;
+
+    let review_ctx = load_review_context();
+    if !review_ctx.git_available {
+        warn(
+            "Review base metadata is unavailable; review will run in best-effort mode without git diff context.",
+        );
+    }
+
+    review_phase(
+        runner,
+        plan_path,
+        review_ctx.base_ref.as_deref(),
+        review_ctx.git_available,
+    )
 }
 
 fn should_resume_existing_plan(request: &str, plan_path: &str) -> bool {
@@ -236,7 +328,13 @@ fn parse_args() -> Args {
     Args::from_args(&[command_name], &args[1..]).unwrap_or_else(|early_exit| {
         exit(match early_exit.status {
             Ok(()) => {
-                print!("{}", render_help_output(&early_exit.output));
+                print!(
+                    "{}",
+                    render_help_output_with(
+                        &early_exit.output,
+                        &crate::runner::dex_available_agents(),
+                    )
+                );
                 0
             }
             Err(()) => {
@@ -257,27 +355,19 @@ fn base_command_name(path: &str) -> &str {
         .unwrap_or(path)
 }
 
-fn render_help_output(base_help: &str) -> String {
-    let mut output = base_help.to_string();
+fn render_help_output_with(base_help: &str, available: &[&str]) -> String {
+    let mut output = String::with_capacity(base_help.len() + HELP_EXAMPLES_SECTION.len());
+    output.push_str(base_help);
     if !output.ends_with('\n') {
         output.push('\n');
     }
-    output.push_str(&available_agents_help_section());
-    output
-}
+    output.push_str(HELP_EXAMPLES_SECTION);
 
-#[cfg(test)]
-fn render_help_output_with(base_help: &str, available: &[&str]) -> String {
-    let mut output = base_help.to_string();
     if !output.ends_with('\n') {
         output.push('\n');
     }
     output.push_str(&available_agents_help_section_with(available));
     output
-}
-
-fn available_agents_help_section() -> String {
-    available_agents_help_section_with(&crate::runner::dex_available_agents())
 }
 
 fn available_agents_help_section_with(available: &[&str]) -> String {
@@ -299,7 +389,7 @@ fn available_agents_help_section_with(available: &[&str]) -> String {
 mod tests {
     use super::{
         available_agents_help_section_with, normalize_active_cli, parse_finalize_target,
-        render_help_output_with, should_resume_existing_plan,
+        render_help_output_with, should_resume_existing_plan, HELP_EXAMPLES_SECTION,
     };
 
     #[test]
@@ -335,7 +425,21 @@ mod tests {
     fn help_output_appends_available_agents_section() {
         assert_eq!(
             render_help_output_with("Usage: dex", &[]),
-            "Usage: dex\n\nAvailable agents:\n  none found in PATH\n"
+            format!(
+                "Usage: dex\n{}\nAvailable agents:\n  none found in PATH\n",
+                HELP_EXAMPLES_SECTION
+            )
+        );
+    }
+
+    #[test]
+    fn help_output_appends_examples_after_options() {
+        assert_eq!(
+            render_help_output_with("Usage: dex\n\nOptions:\n  --help\n", &[]),
+            format!(
+                "Usage: dex\n\nOptions:\n  --help\n{}\nAvailable agents:\n  none found in PATH\n",
+                HELP_EXAMPLES_SECTION
+            )
         );
     }
 
