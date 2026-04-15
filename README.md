@@ -80,30 +80,30 @@ dex "instrument all database queries and HTTP handlers in cmd/server \
      request latency histograms and error rates in Prometheus format"
 ```
 
-**Use Claude instead of the default agent, skip review for a quick task:**
+**Use Claude instead of the default agent:**
 
 ```bash
-dex --cli claude --no-review "add structured JSON logging to the worker package, \
+dex --cli claude "add structured JSON logging to the worker package, \
      replace all fmt.Printf calls with slog"
 ```
 
-**Resume from an existing plan after a crash or interruption:**
+**Resume from the dex state directory after a crash or interruption:**
 
 ```bash
-dex --plan .dex/plan.md
+dex
 ```
 
 **Raw agent loop for open-ended work (10 iterations):**
 
 ```bash
-dex -b 10 "explore the codebase and improve test coverage \
+dex --bare 10 "explore the codebase and improve test coverage \
      for any file under 60% branch coverage"
 ```
 
 **Finalize a feature branch for merge:**
 
 ```bash
-dex --finalize --base-ref main
+dex --finalize main
 ```
 
 ## How it works
@@ -139,7 +139,7 @@ Five specialized reviewers run concurrently, each in its own agent process:
 - **Testing**: coverage gaps, weak assertions, missing edge cases
 - **Documentation**: README drift and missing docs for new behavior
 
-Each writes findings to `.dex/review-<name>.md`. If any issues are found, a fixer agent reads all findings, verifies them against the actual code, filters false positives, and commits fixes.
+Each writes findings to `.dex/review-<name>.md`. The review diff base is loaded from `.dex/review-base-ref.txt`, which dex snapshots before implementation begins so the full implementation can still be reviewed after interruptions or resumes. If any issues are found, a fixer agent reads all findings, verifies them against the actual code, filters false positives, and commits fixes.
 
 Then a focused review loop runs with only quality and implementation reviewers for up to 3 additional rounds. The phase ends when both report zero issues, or the cap is reached.
 
@@ -148,14 +148,11 @@ Then a focused review loop runs with only quality and implementation reviewers f
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--cli <name>` | `opencode` | Coding CLI to use |
-| `--plan <path>` | | Skip planning and use an existing plan file |
-| `--no-review` | `false` | Skip the review phase |
-| `--base-ref <ref>` | `HEAD` | Base git ref for review diffs and finalize rebases |
 | `--timeout <seconds>` | `1200` | Kill the agent after this many idle seconds |
-| `-b <iterations>` | | Bare mode: send the request straight to the agent for N iterations |
-| `--finalize` | `false` | Rebase, tidy commits, and rerun checks against the base branch |
+| `--bare <iterations>` | | Bare mode: send the request straight to the agent for N iterations |
+| `--finalize` | `false` | Rebase, tidy commits, and rerun checks against the user-provided target |
 
-Flag values persist across runs in `.dex/config.json`, so you don't have to repeat `--cli claude` every time.
+`--cli` persists across runs in `.dex/config.json`, so you don't have to repeat `--cli claude` every time.
 
 ## Supported CLIs
 
@@ -177,11 +174,12 @@ dex stores all working state in a `.dex/` directory at your project root. It's g
 
 | File | Purpose | Created by |
 |------|---------|------------|
-| `config.json` | Persisted flag values across runs | dex |
+| `config.json` | Persisted CLI preference across runs | dex |
 | `plan.md` | The current plan with checkbox tasks | agent |
 | `request.txt` | Original user request for revisions | dex |
 | `questions.md` | Clarifying questions from the agent | agent |
 | `feedbacks.json` | Accumulated revision feedback | dex |
+| `review-base-ref.txt` | Durable review diff base captured before implementation | dex |
 | `review-*.md` | Review findings per reviewer | agent |
 
 You can safely delete the entire `.dex/` directory to start fresh. dex recreates it on the next run.

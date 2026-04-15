@@ -14,20 +14,38 @@ use crate::ui::{
 
 // ── Phase 1: Planning ──
 
-pub fn plan_phase(r: &Runner, user_input: &str) -> Result<Option<String>, String> {
+const EXISTING_PLAN_CHOICE_PROMPT: &str =
+    "Is your request a revision of this plan, a new plan, or should dex quit? Resume the current plan by running dex without a request.";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanPhaseResult {
+    pub plan_path: String,
+    pub created_new_plan: bool,
+}
+
+fn should_refresh_review_base_ref_after_planning(
+    has_existing_plan: bool,
+    choice: Option<&str>,
+) -> bool {
+    !has_existing_plan || matches!(choice, Some("new"))
+}
+
+pub fn plan_phase(r: &Runner, user_input: &str) -> Result<Option<PlanPhaseResult>, String> {
     banner("PLANNING");
     ensure_dex_dir();
 
     let mut feedbacks: Vec<String> = Vec::new();
     let mut request = user_input.to_string();
     let plan_path = dex_path("plan.md");
+    let existing_plan = read_dex_file("plan.md");
+    let mut created_new_plan =
+        should_refresh_review_base_ref_after_planning(existing_plan.is_some(), None);
 
-    if let Some(existing) = read_dex_file("plan.md") {
+    if let Some(existing) = existing_plan {
         show_markdown("Existing plan", &existing);
-        let choice = prompt_choice(
-            "Is your request a revision of this plan, or a new plan?",
-            &["revise", "new"],
-        );
+        let choice = prompt_choice(EXISTING_PLAN_CHOICE_PROMPT, &["revise", "new", "quit"]);
+        created_new_plan =
+            should_refresh_review_base_ref_after_planning(true, Some(choice.as_str()));
         match choice.as_str() {
             "new" => clear_plan_state(),
             "revise" => {
@@ -36,6 +54,10 @@ pub fn plan_phase(r: &Runner, user_input: &str) -> Result<Option<String>, String
                 }
                 feedbacks = load_feedbacks();
                 feedbacks.push(user_input.to_string());
+            }
+            "quit" => {
+                info("Exiting without changing the current plan.");
+                return Ok(None);
             }
             _ => {}
         }
@@ -80,10 +102,11 @@ pub fn plan_phase(r: &Runner, user_input: &str) -> Result<Option<String>, String
             Some(p) => p,
             None => {
                 warn("CLI did not produce a plan or questions. Retrying...");
-                feedbacks.push(
-                    "You did not produce a plan in .dex/plan.md or questions in .dex/questions.md. Please do so."
-                        .to_string(),
-                );
+                feedbacks.push(format!(
+                    "You did not produce a plan in {} or questions in {}. Please do so.",
+                    dex_path("plan.md"),
+                    dex_path("questions.md")
+                ));
                 save_feedbacks(&feedbacks);
                 continue;
             }
@@ -98,7 +121,10 @@ pub fn plan_phase(r: &Runner, user_input: &str) -> Result<Option<String>, String
         match choice.as_str() {
             "accept" => {
                 info("Plan accepted!");
-                return Ok(Some(plan_path));
+                return Ok(Some(PlanPhaseResult {
+                    plan_path,
+                    created_new_plan,
+                }));
             }
             "reject" => {
                 warn("Plan rejected.");
@@ -370,7 +396,6 @@ fn run_review_fanout(
             let role_name = rv.name.to_string();
             let role_scope = rv.scope.to_string();
             let role_prompt = rv.prompt.to_string();
-            let review_path = dex_path(&format!("review-{}.md", rv.name));
 
             info(&format!(
                 "[parallel:{}] running {} review",
@@ -386,7 +411,7 @@ fn run_review_fanout(
                     "RoleName": role_name,
                     "RoleScope": role_scope,
                     "RolePrompt": role_prompt,
-                    "ReviewPath": review_path,
+                    "ReviewName": format!("review-{}.md", rv.name),
                 }),
             );
 
@@ -471,7 +496,30 @@ fn is_clean_review(review: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{BROAD_REVIEWERS, FOCUSED_REVIEWERS};
+    use super::{
+        should_refresh_review_base_ref_after_planning, BROAD_REVIEWERS,
+        EXISTING_PLAN_CHOICE_PROMPT, FOCUSED_REVIEWERS,
+    };
+
+    #[test]
+    fn existing_plan_prompt_mentions_quit_and_resume_behavior() {
+        assert!(EXISTING_PLAN_CHOICE_PROMPT.contains("quit"));
+        assert!(EXISTING_PLAN_CHOICE_PROMPT.contains("without a request"));
+    }
+
+    #[test]
+    fn review_base_ref_refreshes_only_for_new_plans() {
+        assert!(should_refresh_review_base_ref_after_planning(false, None));
+        assert!(should_refresh_review_base_ref_after_planning(true, Some("new")));
+        assert!(!should_refresh_review_base_ref_after_planning(
+            true,
+            Some("revise")
+        ));
+        assert!(!should_refresh_review_base_ref_after_planning(
+            true,
+            Some("quit")
+        ));
+    }
 
     #[test]
     fn focused_reviewer_names_do_not_overlap_with_broad_reviewers() {
@@ -501,15 +549,15 @@ pub fn bare_phase(r: &Runner, request: &str, max_iterations: usize) -> Result<()
 
 // ── Finalize Phase ──
 
-pub fn finalize_phase(r: &Runner, plan_path: &str, base_ref: &str) -> Result<(), String> {
+pub fn finalize_phase(r: &Runner, plan_path: &str, finalize_target: &str) -> Result<(), String> {
     banner("FINALIZE");
 
     let branch = current_branch()?;
-    let finalize_target = resolve_finalize_target(base_ref)?;
+    let finalize_target = resolve_finalize_target(finalize_target)?;
     let commits_ahead = commit_count_ahead(&finalize_target)?;
     if commits_ahead == 0 {
         return Err(format!(
-            "finalize: branch {:?} has no commits to finalize relative to {:?}; run this on your feature branch or pass --base-ref <ref>",
+            "finalize: branch {:?} has no commits to finalize relative to {:?}; run this on your feature branch or choose a different target",
             branch, finalize_target
         ));
     }
@@ -540,62 +588,27 @@ fn current_branch() -> Result<String, String> {
     Ok(branch)
 }
 
-fn resolve_finalize_target(base_ref: &str) -> Result<String, String> {
-    if base_ref != "HEAD" {
-        git_trimmed_output(&["rev-parse", "--verify", base_ref])?;
-        return Ok(base_ref.to_string());
+fn resolve_finalize_target(finalize_target: &str) -> Result<String, String> {
+    if finalize_target.trim().is_empty() {
+        return Err(
+            "finalize requires a rebase target: dex --finalize <target-for-rebase>".to_string(),
+        );
     }
 
-    if let Ok(target) = git_trimmed_output(&[
-        "symbolic-ref",
-        "--quiet",
-        "--short",
-        "refs/remotes/origin/HEAD",
-    ]) {
-        if !target.is_empty() {
-            return Ok(target);
-        }
-    }
-
-    for candidate in [
-        "refs/remotes/origin/main",
-        "refs/remotes/origin/master",
-        "refs/heads/main",
-        "refs/heads/master",
-    ] {
-        if git_ref_exists(candidate) {
-            return Ok(candidate
-                .strip_prefix("refs/remotes/")
-                .or_else(|| candidate.strip_prefix("refs/heads/"))
-                .unwrap_or(candidate)
-                .to_string());
-        }
-    }
-
-    Err(
-        "finalize could not resolve a default base branch. Set origin/HEAD, create a local main/master branch, or pass --base-ref <ref>."
-            .to_string(),
-    )
+    git_trimmed_output(&["rev-parse", "--verify", finalize_target])?;
+    Ok(finalize_target.to_string())
 }
 
-fn commit_count_ahead(base_ref: &str) -> Result<u64, String> {
-    let range = format!("{}..HEAD", base_ref);
+fn commit_count_ahead(finalize_target: &str) -> Result<u64, String> {
+    let range = format!("{}..HEAD", finalize_target);
     let count = git_trimmed_output(&["rev-list", "--count", &range])?;
     count
         .parse::<u64>()
         .map_err(|e| format!("parse git rev-list count {:?}: {}", count, e))
 }
 
-fn target_needs_fetch(base_ref: &str) -> bool {
-    base_ref.starts_with("origin/")
-}
-
-fn git_ref_exists(refname: &str) -> bool {
-    Command::new("git")
-        .args(["show-ref", "--verify", "--quiet", refname])
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+fn target_needs_fetch(finalize_target: &str) -> bool {
+    finalize_target.starts_with("origin/")
 }
 
 fn git_trimmed_output(args: &[&str]) -> Result<String, String> {

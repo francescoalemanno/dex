@@ -21,7 +21,7 @@ Scope: {{RoleScope}}
 
 Report problems only. No positive observations.
 
-Write your review to `{{ReviewPath}}` using this exact format:
+Write your review to `{{dex_path ReviewName}}` using this exact format:
 
 Reviewer: {{RoleName}}
 Scope: {{RoleScope}}

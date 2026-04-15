@@ -87,6 +87,63 @@ pub static CLI_CONFIGS: &[(&str, CLIConfig)] = &[
     ),
 ];
 
+fn builtin_agent_names() -> Vec<&'static str> {
+    CLI_CONFIGS.iter().map(|(name, _)| *name).collect()
+}
+
+fn dex_available_agents_with<F>(mut is_available: F) -> Vec<&'static str>
+where
+    F: FnMut(&str) -> bool,
+{
+    CLI_CONFIGS
+        .iter()
+        .filter_map(|(name, config)| is_available(config.cmd).then_some(*name))
+        .collect()
+}
+
+pub fn dex_available_agents() -> Vec<&'static str> {
+    dex_available_agents_with(|cmd| which::which(cmd).is_ok())
+}
+
+fn validate_cli_name_with_available(name: &str, available: &[&str]) -> Result<(), String> {
+    let is_builtin = CLI_CONFIGS.iter().any(|(candidate, _)| *candidate == name);
+    if !is_builtin {
+        let supported = builtin_agent_names().join(", ");
+        return Err(match available {
+            [] => format!(
+                "unknown CLI {:?}; supported agents: {}; none are currently available in PATH",
+                name, supported
+            ),
+            _ => format!(
+                "unknown CLI {:?}; choose one of the agents currently available in PATH: {}",
+                name,
+                available.join(", ")
+            ),
+        });
+    }
+
+    if available.iter().any(|candidate| *candidate == name) {
+        return Ok(());
+    }
+
+    Err(match available {
+        [] => format!(
+            "CLI {:?} is supported but not currently available in PATH; no supported agents were found",
+            name
+        ),
+        _ => format!(
+            "CLI {:?} is not currently available in PATH; available agents: {}",
+            name,
+            available.join(", ")
+        ),
+    })
+}
+
+pub fn validate_cli_name(name: &str) -> Result<(), String> {
+    let available = dex_available_agents();
+    validate_cli_name_with_available(name, &available)
+}
+
 pub struct Runner {
     config_idx: usize,
     timeout: Duration,
@@ -101,13 +158,11 @@ enum StreamLine {
 
 impl Runner {
     pub fn new(name: &str, timeout: Duration) -> Result<Self, String> {
+        validate_cli_name(name)?;
         let idx = CLI_CONFIGS
             .iter()
             .position(|(k, _)| *k == name)
-            .ok_or_else(|| {
-                let names: Vec<&str> = CLI_CONFIGS.iter().map(|(k, _)| *k).collect();
-                format!("unknown CLI {:?}, available: {}", name, names.join(", "))
-            })?;
+            .ok_or_else(|| format!("unknown CLI {:?}", name))?;
         Ok(Runner {
             config_idx: idx,
             timeout,
@@ -375,5 +430,37 @@ fn walk_json(v: &Value, texts: &mut Vec<String>) {
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{dex_available_agents_with, validate_cli_name_with_available};
+
+    #[test]
+    fn filters_builtins_by_runtime_availability() {
+        let available = dex_available_agents_with(|cmd| matches!(cmd, "codex" | "gemini"));
+
+        assert_eq!(available, vec!["codex", "gemini"]);
+    }
+
+    #[test]
+    fn rejects_supported_but_missing_agent() {
+        let err = validate_cli_name_with_available("claude", &["codex", "gemini"]).unwrap_err();
+
+        assert_eq!(
+            err,
+            "CLI \"claude\" is not currently available in PATH; available agents: codex, gemini"
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_agent_with_available_choices() {
+        let err = validate_cli_name_with_available("unknown", &["codex", "gemini"]).unwrap_err();
+
+        assert_eq!(
+            err,
+            "unknown CLI \"unknown\"; choose one of the agents currently available in PATH: codex, gemini"
+        );
     }
 }
