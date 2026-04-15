@@ -35,6 +35,6 @@ If there are NO problems, write exactly:
 Findings:
 - none
 Overall:
-- 0 findings
+- ZERO FINDINGS
 
 Do NOT fix anything. Only review.

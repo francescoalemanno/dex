@@ -313,7 +313,7 @@ func ReviewPhase(r *Runner, planPath, baseRef string) error {
 	for round := 1; round <= maxFocusedRounds; round++ {
 		issues := runReviewFanout(r, planPath, baseRef, focusedReviewers, "focused", round, maxFocusedRounds)
 		if issues == nil {
-			info("All focused reviewers report ZERO ISSUES. Review phase complete!")
+			info("All focused reviewers report ZERO FINDINGS. Review phase complete!")
 			return nil
 		}
 		if err := runFixer(r, planPath, baseRef, issues); err != nil {
@@ -399,7 +399,7 @@ func runFixer(r *Runner, planPath, baseRef string, issues []string) error {
 
 func isCleanReview(review string) bool {
 	normalized := strings.ToUpper(strings.TrimSpace(review))
-	return strings.Contains(normalized, "ZERO ISSUES")
+	return strings.Contains(normalized, "ZERO FINDINGS")
 }
 
 // ── Bare Mode ──
