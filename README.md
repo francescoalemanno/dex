@@ -8,7 +8,7 @@
 
 You describe what you want. dex turns it into a plan you approve, executes it one task at a time with fresh context each round, then runs parallel code reviews and fixes what the reviewers catch. You stay in control without doing the grunt work.
 
-The current implementation is written in Rust and ships release binaries for Linux, macOS, and Windows on both `amd64` and `arm64`.
+The current implementation is written in Rust and ships release binaries for Linux and macOS on both `amd64` and `arm64`, plus Windows on `amd64`.
 
 ## Why not just loop?
 

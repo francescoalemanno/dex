@@ -1,38 +1,105 @@
 name: release
 
 on:
-  push:
-    tags:
-      - 'v*'
+  release:
+    types:
+      - created
 
 permissions:
   contents: write
 
 jobs:
-  goreleaser:
-    runs-on: macos-14
+  linux_windows:
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@v6
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
 
-      - uses: Swatinem/rust-cache@v2
+      - name: Install cross-compilers
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends gcc-aarch64-linux-gnu gcc-mingw-w64-x86-64-win32 musl-tools zip
 
-      - uses: mlugg/setup-zig@v1
-
-      - name: Install cargo-zigbuild
-        run: cargo install --locked cargo-zigbuild
+      - name: Install Rust targets
+        run: rustup target add aarch64-unknown-linux-gnu x86_64-pc-windows-gnu x86_64-unknown-linux-musl
 
       - name: Run tests
         run: cargo test --locked
 
-      - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v7
-        with:
-          distribution: goreleaser
-          version: "~> v2"
-          args: release --clean
+      - name: Build release binaries
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: x86_64-w64-mingw32-gcc
+        run: cargo build --release --locked --target aarch64-unknown-linux-gnu --target x86_64-pc-windows-gnu --target x86_64-unknown-linux-musl
+
+      - name: Package release assets
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          VERSION="${TAG#v}"
+
+          tar -czf "dex_${VERSION}_linux_amd64.tar.gz" -C target/x86_64-unknown-linux-musl/release dex
+          tar -czf "dex_${VERSION}_linux_arm64.tar.gz" -C target/aarch64-unknown-linux-gnu/release dex
+          zip -j "dex_${VERSION}_windows_amd64.zip" target/x86_64-pc-windows-gnu/release/dex.exe
+
+          sha256sum "dex_${VERSION}_linux_amd64.tar.gz" > "dex_${VERSION}_linux_amd64.tar.gz.sha256"
+          sha256sum "dex_${VERSION}_linux_arm64.tar.gz" > "dex_${VERSION}_linux_arm64.tar.gz.sha256"
+          sha256sum "dex_${VERSION}_windows_amd64.zip" > "dex_${VERSION}_windows_amd64.zip.sha256"
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          VERSION="${TAG#v}"
+          gh release upload "$TAG" \
+            "dex_${VERSION}_linux_amd64.tar.gz" \
+            "dex_${VERSION}_linux_arm64.tar.gz" \
+            "dex_${VERSION}_windows_amd64.zip" \
+            "dex_${VERSION}_linux_amd64.tar.gz.sha256" \
+            "dex_${VERSION}_linux_arm64.tar.gz.sha256" \
+            "dex_${VERSION}_windows_amd64.zip.sha256" \
+            --clobber
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+
+      - name: Install Rust targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Build release binaries
+        run: cargo build --release --locked --target aarch64-apple-darwin --target x86_64-apple-darwin
+
+      - name: Package release assets
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          VERSION="${TAG#v}"
+
+          tar -czf "dex_${VERSION}_darwin_amd64.tar.gz" -C target/x86_64-apple-darwin/release dex
+          tar -czf "dex_${VERSION}_darwin_arm64.tar.gz" -C target/aarch64-apple-darwin/release dex
+
+          shasum -a 256 "dex_${VERSION}_darwin_amd64.tar.gz" > "dex_${VERSION}_darwin_amd64.tar.gz.sha256"
+          shasum -a 256 "dex_${VERSION}_darwin_arm64.tar.gz" > "dex_${VERSION}_darwin_arm64.tar.gz.sha256"
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          VERSION="${TAG#v}"
+          gh release upload "$TAG" \
+            "dex_${VERSION}_darwin_amd64.tar.gz" \
+            "dex_${VERSION}_darwin_arm64.tar.gz" \
+            "dex_${VERSION}_darwin_amd64.tar.gz.sha256" \
+            "dex_${VERSION}_darwin_arm64.tar.gz.sha256" \
+            --clobber
