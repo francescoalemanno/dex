@@ -633,7 +633,7 @@ pub fn finalize_phase(r: &Runner, plan_path: &str, finalize_target: &str) -> Res
         &serde_json::json!({
             "PlanPath": plan_path,
             "FinalizeTarget": finalize_target,
-            "FinalizeNeedsFetch": target_needs_fetch(&finalize_target),
+            "FinalizeNeedsFetch": finalize_target.starts_with("origin/"),
         }),
     );
 
@@ -671,10 +671,6 @@ fn commit_count_ahead(finalize_target: &str) -> Result<u64, String> {
     count
         .parse::<u64>()
         .map_err(|e| format!("parse git rev-list count {:?}: {}", count, e))
-}
-
-fn target_needs_fetch(finalize_target: &str) -> bool {
-    finalize_target.starts_with("origin/")
 }
 
 fn git_trimmed_output(args: &[&str]) -> Result<String, String> {
