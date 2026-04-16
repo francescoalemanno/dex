@@ -4,10 +4,12 @@ use serde_json::Value;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
+use std::process::Command;
 
 const DEX_DIR: &str = ".dex";
 const DEX_PROMPTS_DIR: &str = ".dex/prompts";
 const REVIEW_BASE_REF_FILE: &str = "review-base-ref.txt";
+const BUILTIN_REVIEWERS: &str = include_str!("../prompts/reviewers.json");
 
 const BUILTIN_TEMPLATES: &[(&str, &str)] = &[
     ("bare.txt", include_str!("../prompts/bare.txt")),
@@ -77,6 +79,23 @@ pub fn seed_prompts() {
             fs::write(&path, builtin_content).ok();
         }
     }
+    let reviewers_path = PathBuf::from(DEX_DIR).join("reviewers.json");
+    if !reviewers_path.exists() {
+        fs::write(&reviewers_path, BUILTIN_REVIEWERS).ok();
+    }
+}
+
+pub fn force_seed_prompts() {
+    fs::create_dir_all(DEX_PROMPTS_DIR).ok();
+    for (name, builtin_content) in BUILTIN_TEMPLATES {
+        let path = PathBuf::from(DEX_PROMPTS_DIR).join(name);
+        fs::write(&path, builtin_content).ok();
+    }
+    fs::write(
+        PathBuf::from(DEX_DIR).join("reviewers.json"),
+        BUILTIN_REVIEWERS,
+    )
+    .ok();
 }
 
 pub fn render_prompt(name: &str, data: &Value) -> String {
@@ -228,6 +247,23 @@ pub fn save_config(cfg: &Config) {
     ensure_dex_dir();
     let data = serde_json::to_string_pretty(cfg).unwrap_or_default();
     fs::write(dex_path("config.json"), format!("{}\n", data)).ok();
+}
+
+pub fn git_trimmed_output(args: &[&str]) -> Result<String, String> {
+    let out = Command::new("git")
+        .args(args)
+        .output()
+        .map_err(|e| format!("git {}: {}", args.join(" "), e))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        let detail = if stderr.is_empty() {
+            format!("exit {}", out.status)
+        } else {
+            stderr
+        };
+        return Err(format!("git {}: {}", args.join(" "), detail));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 #[cfg(test)]

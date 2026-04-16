@@ -1,0 +1,41 @@
+{
+  "broad": [
+    {
+      "name": "quality",
+      "scope": "bugs, security, correctness, simplicity",
+      "prompt": "Review code for bugs, security issues, and quality problems.\n\nCorrectness Review:\n- Logic errors — off-by-one errors, incorrect conditionals, wrong operators\n- Edge cases — empty inputs, nil/null values, boundary conditions, concurrent access\n- Error handling — all errors checked, appropriate error wrapping, no silent failures\n- Resource management — proper cleanup, no leaks, correct resource release\n- Concurrency issues — race conditions, deadlocks, thread leaks\n- Data integrity — validation, sanitization, consistent state management\n\nSecurity Analysis:\n- Input validation — all user inputs validated and sanitized\n- Authentication/authorization — proper checks in place\n- Injection vulnerabilities — SQL, command, path traversal\n- Secret exposure — no hardcoded credentials or keys\n- Information disclosure — error messages, logs, debug info\n\nSimplicity Assessment:\n- Direct solutions first — if simple approach works, do not use complex pattern\n- No enterprise patterns for simple problems\n- Question every abstraction — each interface/abstraction must solve real problem\n- No scope creep — changes solve only the stated problem\n- No premature optimization\n\nFocus on defects that would cause runtime failures, security vulnerabilities, or maintainability problems.\nReport problems only — no positive observations."
+    },
+    {
+      "name": "implementation",
+      "scope": "goal coverage, wiring, completeness, logic flow",
+      "prompt": "Review whether the implementation achieves the stated goal/requirement.\n\nCore Review Responsibilities:\n- Requirement coverage — does implementation address all aspects of the stated requirement? Are there edge cases or scenarios not handled?\n- Correctness of approach — is the chosen approach actually solving the right problem? Could it fail to achieve the goal in certain conditions?\n- Wiring and integration — is everything connected properly? Are new components registered, routes added, handlers wired, configs updated?\n- Completeness — are there missing pieces that would prevent the feature from working? Missing imports, unimplemented interfaces, incomplete migrations?\n- Logic flow — does data flow correctly from input to output? Are transformations correct? Is state managed properly?\n- Edge cases — are boundary conditions handled? Empty inputs, null values, concurrent access, error paths?\n\nFocus on correctness of approach, not code style.\nReport problems only — no positive observations."
+    },
+    {
+      "name": "simplification",
+      "scope": "unnecessary complexity, over-engineering",
+      "prompt": "Detect over-engineered and overcomplicated code — code that works but is more complex than necessary.\n\n- Excessive abstraction layers — wrapper adds nothing, factory for single implementation, layer cake anti-pattern, DTO/mapper overkill\n- Premature generalization — generic solution for specific problem, config objects for 2-3 options, plugin architecture for fixed functionality\n- Unnecessary indirection — pass-through wrappers, excessive method chaining, interface wrapping primitives\n- Future-proofing excess — unused extension points, versioned internal APIs, feature flags for permanent decisions\n- Unnecessary fallbacks — fallback that never triggers, legacy mode kept just in case, dual implementations, silent fallbacks hiding problems\n- Premature optimization — caching rarely-accessed data, custom data structures when arrays/maps work, worker pools for occasional tasks\n\nFor each finding report: location, which over-engineering pattern detected, why it adds unnecessary complexity, what simpler code would look like.\nReport problems only — no positive observations."
+    },
+    {
+      "name": "testing",
+      "scope": "coverage, test quality, edge cases",
+      "prompt": "Review test coverage and quality.\n\nTest Existence and Coverage:\n- Missing tests — new code paths without corresponding tests\n- Untested error paths — error conditions not verified\n- Coverage gaps — functions or branches without test coverage\n\nTest Quality:\n- Tests verify behavior, not implementation details\n- Each test is independent, can run in any order\n- Both success and error paths tested\n- Edge cases and boundary conditions covered\n\nFake Test Detection:\n- Tests that always pass regardless of code changes\n- Tests checking hardcoded values instead of actual output\n- Tests verifying mock behavior instead of code using the mock\n- Ignored errors with _ or empty error checks\n- Conditional assertions that always pass\n\nTest Independence:\n- No shared mutable state between tests\n- Proper setup and teardown\n- No order dependencies between tests\n- Resources properly cleaned up\n\nEdge Case Coverage:\n- Empty inputs and collections\n- Null/nil values\n- Boundary values (zero, max, min)\n- Concurrent access scenarios\n\nReport problems only — no positive observations."
+    },
+    {
+      "name": "documentation",
+      "scope": "README, internal docs, plan alignment",
+      "prompt": "Review code changes and identify missing documentation updates.\n\nREADME.md (Human Documentation) — must document:\n- New features or capabilities\n- New CLI flags or command-line options\n- New API endpoints or interfaces\n- New configuration options\n- Changed behavior that affects users\n- New dependencies or system requirements\n- Breaking changes\nSkip: internal refactoring with no user-visible changes, bug fixes that restore documented behavior, test additions, code style changes.\n\nInternal docs — must document:\n- New architectural patterns discovered/established\n- New conventions or coding standards\n- New build/test commands\n- New libraries or tools integrated\n- Project structure changes\n- Workflow changes\nSkip: standard code additions following existing patterns, simple bug fixes, test additions using existing patterns.\n\nPlan Files:\n- Mark completed items as done\n- Update plan status if needed\n- Note which plan items this change addresses\n\nReport problems only — no positive observations."
+    }
+  ],
+  "focused": [
+    {
+      "name": "critical-correctness",
+      "scope": "critical and major correctness, security, reliability",
+      "prompt": "Review code only for critical and major bugs, security issues, and correctness problems.\nFocus only on critical and major issues. Ignore style/minor issues.\n\n- Logic errors that cause incorrect behavior\n- Security vulnerabilities — injection, XSS, secrets exposure, improper validation\n- Data loss or corruption risks\n- Race conditions — concurrent access, shared state, missing synchronization\n- Resource leaks — unclosed handles, missing cleanup\n- Error handling gaps — silent failures, ignored errors\n\nReport problems only — no positive observations."
+    },
+    {
+      "name": "critical-coverage",
+      "scope": "critical and major goal coverage, integration, completeness",
+      "prompt": "Review whether any critical or major requirement-coverage or integration issues remain.\nFocus only on critical and major issues. Ignore style/minor issues.\n\n- Requirements that are not implemented at all\n- Integration bugs between components — missing wiring, unregistered handlers, broken data flow\n- Critical logic flow errors\n- Missing error paths that could cause crashes or data loss\n\nReport problems only — no positive observations."
+    }
+  ]
+}
