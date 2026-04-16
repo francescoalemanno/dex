@@ -1,11 +1,37 @@
 use serde_json::Value;
+use shared_child::SharedChild;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 use termcolor::{ColorChoice, StandardStream};
 
 use crate::ui::{err_msg, warn, write_timestamp};
+
+static CHILDREN: Mutex<Vec<Arc<SharedChild>>> = Mutex::new(Vec::new());
+
+fn track_child(child: &Arc<SharedChild>) {
+    if let Ok(mut children) = CHILDREN.lock() {
+        children.push(Arc::clone(child));
+    }
+}
+
+fn untrack_child(child: &Arc<SharedChild>) {
+    if let Ok(mut children) = CHILDREN.lock() {
+        children.retain(|c| c.id() != child.id());
+    }
+}
+
+/// Kill all tracked child processes. Called on exit / signal.
+pub fn kill_all_children() {
+    let children = match CHILDREN.lock() {
+        Ok(children) => children.clone(),
+        Err(e) => e.into_inner().clone(),
+    };
+    for child in &children {
+        let _ = child.kill();
+    }
+}
 
 pub struct CLIConfig {
     pub cmd: &'static str,
@@ -95,21 +121,21 @@ pub fn dex_available_agents() -> Vec<&'static str> {
 }
 
 pub fn validate_cli_name(name: &str) -> Result<(), String> {
-    let agents = dex_available_agents();
-    let is_builtin = agents.contains(&name);
-    if !is_builtin {
-        let supported = agents.join(", ");
-        return Err(match agents.len() {
-            0 => format!(
-                "unknown CLI {:?}; supported agents: {}; none are currently available in PATH",
-                name, supported
-            ),
-            _ => format!(
-                "unknown CLI {:?}; choose one of the agents currently available in PATH: {}",
-                name,
-                agents.join(", ")
-            ),
-        });
+    let known = CLI_CONFIGS.iter().any(|(k, _)| *k == name);
+    if !known {
+        let all_names: Vec<&str> = CLI_CONFIGS.iter().map(|(k, _)| *k).collect();
+        return Err(format!(
+            "unknown CLI {:?}; supported agents: {}",
+            name,
+            all_names.join(", ")
+        ));
+    }
+    let cfg = &CLI_CONFIGS.iter().find(|(k, _)| *k == name).unwrap().1;
+    if which::which(cfg.cmd).is_err() {
+        return Err(format!(
+            "CLI {:?} is not available in PATH (command {:?} not found)",
+            name, cfg.cmd
+        ));
     }
     Ok(())
 }
@@ -205,27 +231,21 @@ impl Runner {
             cmd.stdin(Stdio::null());
         }
 
-        // Set process group on unix
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            cmd.process_group(0);
-        }
-
-        let mut child = cmd
-            .spawn()
+        let child = SharedChild::spawn(&mut cmd)
             .map_err(|e| format!("spawn {}: {}", cfg.cmd, e))?;
+        let child = Arc::new(child);
+
+        track_child(&child);
 
         if cfg.stdin {
             use std::io::Write;
-            if let Some(mut stdin) = child.stdin.take() {
+            if let Some(mut stdin) = child.take_stdin() {
                 let _ = stdin.write_all(prompt.as_bytes());
-                // stdin is dropped here, closing the pipe
             }
         }
 
-        let stdout = child.stdout.take().ok_or("no stdout")?;
-        let stderr = child.stderr.take().ok_or("no stderr")?;
+        let stdout = child.take_stdout().ok_or("no stdout")?;
+        let stderr = child.take_stderr().ok_or("no stderr")?;
 
         let (tx, rx) = mpsc::channel();
         let start = Instant::now();
@@ -292,6 +312,7 @@ impl Runner {
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     let _ = child.kill();
                     let _ = child.wait();
+                    untrack_child(&child);
                     return Err(format!("agent idle timeout after {:?}", self.timeout));
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -304,6 +325,7 @@ impl Runner {
         let _ = stderr_thread.join();
 
         let status = child.wait().map_err(|e| format!("wait: {}", e))?;
+        untrack_child(&child);
         if status.success() {
             Ok(())
         } else {
