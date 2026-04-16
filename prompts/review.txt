@@ -4,9 +4,9 @@ The implementation plan is at `{{PlanPath}}`. Read it to understand what was bui
 
 {{#if GitAvailable}}
 Run these commands to understand what changed:
-- `git log {{BaseRef}}..HEAD --oneline`
-- `git diff {{BaseRef}}...HEAD`
-- `git diff --stat {{BaseRef}}...HEAD`
+- `git log {{BaseRef}}..HEAD --oneline` — see commit history (what was implemented)
+- `git diff {{BaseRef}}...HEAD` — see actual code changes
+- `git diff --stat {{BaseRef}}...HEAD` — see files changed
 {{else}}
 Git metadata is unavailable in this workspace.
 Review the codebase best-effort from the current source files and the plan alone.
@@ -19,7 +19,7 @@ Scope: {{RoleScope}}
 
 {{RolePrompt}}
 
-Report problems only. No positive observations.
+Report problems only — no positive observations.
 
 Write your review to `{{dex_path ReviewName}}` using this exact format:
 
@@ -43,3 +43,5 @@ Overall:
 - ZERO FINDINGS
 
 Do NOT fix anything. Only review.
+
+OUTPUT FORMAT: No markdown formatting (no **bold**, `code`, # headers). Plain text and - lists are fine.

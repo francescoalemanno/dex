@@ -3,8 +3,8 @@ use std::fs;
 use std::process::Command;
 
 use crate::core::{
-    dex_path, ensure_dex_dir, load_feedbacks, read_dex_file, remove_dex_file, render_prompt,
-    reset_dex_runtime_artifacts, save_feedbacks, save_plan_request,
+    append_progress, dex_path, ensure_dex_dir, load_feedbacks, read_dex_file, remove_dex_file,
+    render_prompt, reset_dex_runtime_artifacts, save_feedbacks, save_plan_request,
 };
 use crate::plan::{all_tasks_done, next_open_task};
 use crate::runner::Runner;
@@ -274,12 +274,14 @@ fn edit_plan_in_editor(plan: &str) -> Result<Option<String>, String> {
 pub fn impl_phase(r: &Runner, plan_path: &str) -> Result<(), String> {
     banner("IMPLEMENTATION");
 
+    let progress_path = dex_path("progress.txt");
     let mut iteration = 1;
     loop {
         let task = next_open_task(plan_path)?;
         let task = match task {
             Some(t) => t,
             None => {
+                append_progress("Implementation", "All tasks complete.");
                 info("All tasks complete!");
                 return Ok(());
             }
@@ -297,17 +299,31 @@ pub fn impl_phase(r: &Runner, plan_path: &str) -> Result<(), String> {
             task.open,
             task.open + task.done
         ));
+        append_progress(
+            &format!("Implementation — iteration {}", iteration),
+            &format!(
+                "Working on: {} ({}/{} steps open)",
+                header,
+                task.open,
+                task.open + task.done
+            ),
+        );
 
         let p = render_prompt(
             "impl.txt",
             &serde_json::json!({
                 "PlanPath": plan_path,
+                "ProgressFile": progress_path,
                 "TaskHeader": task.header,
                 "TaskBody": task.body(),
             }),
         );
 
         if let Err(e) = r.run(&p) {
+            append_progress(
+                &format!("Implementation — iteration {}", iteration),
+                &format!("FAILED: {}", e),
+            );
             err_msg(&format!("CLI error: {}", e));
             return Err(format!(
                 "implementation failed after automatic retries: {}",
@@ -315,7 +331,13 @@ pub fn impl_phase(r: &Runner, plan_path: &str) -> Result<(), String> {
             ));
         }
 
+        append_progress(
+            &format!("Implementation — iteration {}", iteration),
+            &format!("Completed: {}", header),
+        );
+
         if all_tasks_done(plan_path)? {
+            append_progress("Implementation", "All tasks complete.");
             info("All tasks complete!");
             return Ok(());
         }
@@ -336,27 +358,27 @@ static BROAD_REVIEWERS: &[ReviewRole] = &[
     ReviewRole {
         name: "quality",
         scope: "bugs, security, correctness, simplicity",
-        prompt: "Focus on:\n- logic errors\n- edge cases\n- error handling\n- resource management\n- concurrency issues\n- input validation and security issues\n- unnecessary abstraction or over-engineering when a simpler solution would work",
+        prompt: "Review code for bugs, security issues, and quality problems.\n\nCorrectness Review:\n- Logic errors — off-by-one errors, incorrect conditionals, wrong operators\n- Edge cases — empty inputs, nil/null values, boundary conditions, concurrent access\n- Error handling — all errors checked, appropriate error wrapping, no silent failures\n- Resource management — proper cleanup, no leaks, correct resource release\n- Concurrency issues — race conditions, deadlocks, thread leaks\n- Data integrity — validation, sanitization, consistent state management\n\nSecurity Analysis:\n- Input validation — all user inputs validated and sanitized\n- Authentication/authorization — proper checks in place\n- Injection vulnerabilities — SQL, command, path traversal\n- Secret exposure — no hardcoded credentials or keys\n- Information disclosure — error messages, logs, debug info\n\nSimplicity Assessment:\n- Direct solutions first — if simple approach works, do not use complex pattern\n- No enterprise patterns for simple problems\n- Question every abstraction — each interface/abstraction must solve real problem\n- No scope creep — changes solve only the stated problem\n- No premature optimization\n\nFocus on defects that would cause runtime failures, security vulnerabilities, or maintainability problems.\nReport problems only — no positive observations.",
     },
     ReviewRole {
         name: "implementation",
         scope: "goal coverage, wiring, completeness, logic flow",
-        prompt: "Focus on:\n- requirement coverage — does the code actually achieve the plan's goal?\n- correctness of the chosen approach\n- wiring and integration between components\n- completeness — are any requirements missing?\n- logic flow and edge cases",
+        prompt: "Review whether the implementation achieves the stated goal/requirement.\n\nCore Review Responsibilities:\n- Requirement coverage — does implementation address all aspects of the stated requirement? Are there edge cases or scenarios not handled?\n- Correctness of approach — is the chosen approach actually solving the right problem? Could it fail to achieve the goal in certain conditions?\n- Wiring and integration — is everything connected properly? Are new components registered, routes added, handlers wired, configs updated?\n- Completeness — are there missing pieces that would prevent the feature from working? Missing imports, unimplemented interfaces, incomplete migrations?\n- Logic flow — does data flow correctly from input to output? Are transformations correct? Is state managed properly?\n- Edge cases — are boundary conditions handled? Empty inputs, null values, concurrent access, error paths?\n\nFocus on correctness of approach, not code style.\nReport problems only — no positive observations.",
     },
     ReviewRole {
         name: "simplification",
         scope: "unnecessary complexity, over-engineering",
-        prompt: "Focus on:\n- excessive abstraction layers\n- premature generalization\n- unnecessary indirection\n- unused extension points\n- unnecessary fallbacks\n- premature optimization",
+        prompt: "Detect over-engineered and overcomplicated code — code that works but is more complex than necessary.\n\n- Excessive abstraction layers — wrapper adds nothing, factory for single implementation, layer cake anti-pattern, DTO/mapper overkill\n- Premature generalization — generic solution for specific problem, config objects for 2-3 options, plugin architecture for fixed functionality\n- Unnecessary indirection — pass-through wrappers, excessive method chaining, interface wrapping primitives\n- Future-proofing excess — unused extension points, versioned internal APIs, feature flags for permanent decisions\n- Unnecessary fallbacks — fallback that never triggers, legacy mode kept just in case, dual implementations, silent fallbacks hiding problems\n- Premature optimization — caching rarely-accessed data, custom data structures when arrays/maps work, worker pools for occasional tasks\n\nFor each finding report: location, which over-engineering pattern detected, why it adds unnecessary complexity, what simpler code would look like.\nReport problems only — no positive observations.",
     },
     ReviewRole {
         name: "testing",
         scope: "coverage, test quality, edge cases",
-        prompt: "Focus on:\n- missing tests for changed code\n- untested error paths\n- weak assertions\n- fake tests that do not verify behavior\n- missing edge-case coverage\n- test independence",
+        prompt: "Review test coverage and quality.\n\nTest Existence and Coverage:\n- Missing tests — new code paths without corresponding tests\n- Untested error paths — error conditions not verified\n- Coverage gaps — functions or branches without test coverage\n\nTest Quality:\n- Tests verify behavior, not implementation details\n- Each test is independent, can run in any order\n- Both success and error paths tested\n- Edge cases and boundary conditions covered\n\nFake Test Detection:\n- Tests that always pass regardless of code changes\n- Tests checking hardcoded values instead of actual output\n- Tests verifying mock behavior instead of code using the mock\n- Ignored errors with _ or empty error checks\n- Conditional assertions that always pass\n\nTest Independence:\n- No shared mutable state between tests\n- Proper setup and teardown\n- No order dependencies between tests\n- Resources properly cleaned up\n\nEdge Case Coverage:\n- Empty inputs and collections\n- Null/nil values\n- Boundary values (zero, max, min)\n- Concurrent access scenarios\n\nReport problems only — no positive observations.",
     },
     ReviewRole {
         name: "documentation",
         scope: "README, internal docs, plan alignment",
-        prompt: "Focus on:\n- missing README updates for new features, flags, configuration, APIs, or changed behavior\n- missing internal documentation updates for new patterns, commands, or architecture\n- plan file drift that should be corrected while addressing documentation gaps",
+        prompt: "Review code changes and identify missing documentation updates.\n\nREADME.md (Human Documentation) — must document:\n- New features or capabilities\n- New CLI flags or command-line options\n- New API endpoints or interfaces\n- New configuration options\n- Changed behavior that affects users\n- New dependencies or system requirements\n- Breaking changes\nSkip: internal refactoring with no user-visible changes, bug fixes that restore documented behavior, test additions, code style changes.\n\nInternal docs — must document:\n- New architectural patterns discovered/established\n- New conventions or coding standards\n- New build/test commands\n- New libraries or tools integrated\n- Project structure changes\n- Workflow changes\nSkip: standard code additions following existing patterns, simple bug fixes, test additions using existing patterns.\n\nPlan Files:\n- Mark completed items as done\n- Update plan status if needed\n- Note which plan items this change addresses\n\nReport problems only — no positive observations.",
     },
 ];
 
@@ -364,12 +386,12 @@ static FOCUSED_REVIEWERS: &[ReviewRole] = &[
     ReviewRole {
         name: "critical-correctness",
         scope: "critical and major correctness, security, reliability",
-        prompt: "Review code only for critical and major bugs, security issues, and correctness problems.\nIgnore style issues and minor suggestions.\nFocus on:\n- logic errors that cause incorrect behavior\n- security vulnerabilities\n- data loss or corruption risks\n- concurrency bugs",
+        prompt: "Review code only for critical and major bugs, security issues, and correctness problems.\nFocus only on critical and major issues. Ignore style/minor issues.\n\n- Logic errors that cause incorrect behavior\n- Security vulnerabilities — injection, XSS, secrets exposure, improper validation\n- Data loss or corruption risks\n- Race conditions — concurrent access, shared state, missing synchronization\n- Resource leaks — unclosed handles, missing cleanup\n- Error handling gaps — silent failures, ignored errors\n\nReport problems only — no positive observations.",
     },
     ReviewRole {
         name: "critical-coverage",
         scope: "critical and major goal coverage, integration, completeness",
-        prompt: "Review whether any critical or major requirement-coverage or integration issues remain.\nIgnore style issues and minor suggestions.\nFocus on:\n- requirements that are not implemented at all\n- integration bugs between components\n- critical logic flow errors",
+        prompt: "Review whether any critical or major requirement-coverage or integration issues remain.\nFocus only on critical and major issues. Ignore style/minor issues.\n\n- Requirements that are not implemented at all\n- Integration bugs between components — missing wiring, unregistered handlers, broken data flow\n- Critical logic flow errors\n- Missing error paths that could cause crashes or data loss\n\nReport problems only — no positive observations.",
     },
 ];
 
@@ -382,6 +404,10 @@ pub fn review_phase(
     git_available: bool,
 ) -> Result<(), String> {
     // Broad pass: all reviewers, once
+    append_progress(
+        "Review — broad pass",
+        "Starting broad review with all reviewers.",
+    );
     let issues = run_review_fanout(
         r,
         plan_path,
@@ -392,12 +418,25 @@ pub fn review_phase(
         1,
         1,
     );
-    if let Some(issues) = issues {
-        run_fixer(r, plan_path, base_ref, git_available, &issues)?;
+    if let Some(ref issues) = issues {
+        append_progress(
+            "Review — broad pass",
+            &format!("Issues found by {} reviewers, running fixer.", issues.len()),
+        );
+        run_fixer(r, plan_path, base_ref, git_available, issues)?;
+    } else {
+        append_progress("Review — broad pass", "No issues found.");
     }
 
     // Focused pass: critical/major reviewers, loop till clean
     for round in 1..=MAX_FOCUSED_ROUNDS {
+        append_progress(
+            &format!(
+                "Review — focused pass round {}/{}",
+                round, MAX_FOCUSED_ROUNDS
+            ),
+            "Starting focused review (critical/major issues only).",
+        );
         let issues = run_review_fanout(
             r,
             plan_path,
@@ -410,15 +449,36 @@ pub fn review_phase(
         );
         match issues {
             None => {
+                append_progress(
+                    &format!(
+                        "Review — focused pass round {}/{}",
+                        round, MAX_FOCUSED_ROUNDS
+                    ),
+                    "ZERO ISSUES. Review phase complete.",
+                );
                 info("All focused reviewers report ZERO ISSUES. Review phase complete!");
                 return Ok(());
             }
-            Some(issues) => {
-                run_fixer(r, plan_path, base_ref, git_available, &issues)?;
+            Some(ref issues) => {
+                append_progress(
+                    &format!(
+                        "Review — focused pass round {}/{}",
+                        round, MAX_FOCUSED_ROUNDS
+                    ),
+                    &format!("Issues found by {} reviewers, running fixer.", issues.len()),
+                );
+                run_fixer(r, plan_path, base_ref, git_available, issues)?;
             }
         }
     }
 
+    append_progress(
+        "Review",
+        &format!(
+            "Focused review cap of {} rounds reached, accepting current state.",
+            MAX_FOCUSED_ROUNDS
+        ),
+    );
     warn(&format!(
         "Focused review cap of {} rounds reached, accepting current state.",
         MAX_FOCUSED_ROUNDS

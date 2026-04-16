@@ -2,6 +2,7 @@ use handlebars::Handlebars;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
 
 const DEX_DIR: &str = ".dex";
@@ -130,11 +131,38 @@ pub fn load_feedbacks() -> Vec<String> {
     }
 }
 
+pub fn append_progress(section: &str, body: &str) {
+    let body = body.trim();
+    if body.is_empty() {
+        return;
+    }
+
+    ensure_dex_dir();
+    let path = dex_path("progress.txt");
+    let mut file = match fs::OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(file) => file,
+        Err(_) => return,
+    };
+
+    let needs_header = file.metadata().map(|m| m.len() == 0).unwrap_or(true);
+    if needs_header {
+        let _ = writeln!(file, "# Dex Progress Log");
+        let _ = writeln!(file);
+    } else {
+        let _ = writeln!(file);
+    }
+
+    let _ = writeln!(file, "## {}", section);
+    let _ = writeln!(file);
+    let _ = writeln!(file, "{}", body);
+}
+
 pub fn reset_dex_runtime_artifacts() {
     remove_dex_file("plan.md");
     remove_dex_file("request.txt");
     remove_dex_file("feedbacks.json");
     remove_dex_file("questions.md");
+    remove_dex_file("progress.txt");
     remove_dex_file(REVIEW_BASE_REF_FILE);
 
     let entries = match fs::read_dir(DEX_DIR) {
@@ -210,12 +238,13 @@ mod tests {
                 "RoleScope": "bugs",
                 "RolePrompt": "Focus on bugs.",
                 "ReviewName": "review-quality.md",
+                "BaseRef": "",
             }),
         );
 
         assert!(prompt.contains("The implementation plan is at `custom-plan.md`."));
         assert!(prompt.contains(&format!(
-            "Write your review to `{}` using this exact format:",
+            "Write your review to `{}`",
             dex_path("review-quality.md")
         )));
     }

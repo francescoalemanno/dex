@@ -1,7 +1,6 @@
 You are in the PLANNING phase. Do NOT implement anything.
 
-The user wants:
-{{Request}}
+You are helping create an implementation plan for: {{Request}}
 
 ## Step 0: Check for Existing State
 
@@ -15,9 +14,10 @@ Do not discard an existing draft and start over unless the feedback genuinely re
 ## Step 1: Explore the Codebase
 
 If this is the first iteration or you have not yet explored:
-- inspect the relevant code
-- identify the files, patterns, and constraints that matter
-- decide what you can determine yourself without asking
+- Search for relevant files and patterns
+- Understand the project structure
+- Identify existing conventions and patterns
+- Find related code that will inform the implementation
 
 ## Step 2: Ask Clarifying Questions Only When Needed
 
@@ -56,9 +56,11 @@ The plan MUST use this structure:
 - Dependencies: <external dependencies if any>
 
 ## Development Approach
+- **Testing approach**: Regular (code first, then tests) or TDD (test first)
 - Complete each task fully before moving to the next
-- **CRITICAL: every task that changes code MUST include new/updated tests**
-- **CRITICAL: all tests must pass before starting the next task**
+- <Any project-specific approaches>
+- **CRITICAL: every task MUST include new/updated tests**
+- **CRITICAL: all tests must pass before starting next task**
 
 ## Implementation Steps
 
@@ -71,50 +73,56 @@ The plan MUST use this structure:
 - [ ] first implementation step
 - [ ] second implementation step
 - [ ] write tests for this task
-- [ ] run the relevant validation commands
+- [ ] run project test suite - must pass before task 2
 
 ### Task 2: <Title>
 ...
 
+(continue for all tasks)
+
 ### Task N: Verify acceptance criteria
-- [ ] run the full relevant test suite
-- [ ] run the relevant linting or static checks
+
+- [ ] run full test suite (use project-specific command)
+- [ ] run linter (use project-specific command)
+- [ ] verify test coverage meets 80%+
 
 ### Task N+1: Update documentation
-- [ ] update user-facing docs if behavior changed
-- [ ] update internal docs or patterns if needed
+
+- [ ] update README.md if user-facing changes
+- [ ] update internal docs if patterns changed
 ---
 
 ## Validation Before Writing
 
-Before writing {{dex_path "plan.md"}}, verify:
+Before writing {{dex_path "plan.md"}}, verify the plan against these criteria:
 
 **Scope & Feasibility:**
-- tasks are right-sized and executable (aim for 3-7 steps per task)
-- each task focuses on one component or closely related files
-- task dependencies are linear (no circular deps)
-- external dependencies are minimized and clearly noted
+- [ ] Tasks are reasonably sized (aim for 3-7 items; adjust if needed for coherence)
+- [ ] Each task focuses on one component or closely related files
+- [ ] Task dependencies are linear (no circular deps)
+- [ ] External dependencies are minimized and clearly noted
 
 **Completeness:**
-- all requirements from the request are covered
-- each task specifies file paths where known
-- each task that modifies code includes test items
-- checkboxes are automatable by a coding agent (no manual testing or deployment items)
+- [ ] All requirements from the original description are addressed
+- [ ] Each task specifies file paths where known (use patterns for discovery tasks)
+- [ ] Each task that modifies code includes test items
+- [ ] Task section checkboxes are automatable by the agent (no manual testing, deployment, or external verification items as `- [ ]` inside Task sections)
 
 **Simplicity (YAGNI):**
-- no unnecessary abstractions
-- no "future-proofing" features not in the original request
-- no backwards compatibility or fallbacks unless explicitly requested
-- new files only for genuinely new components
-- no over-engineered patterns when simpler solutions work
+- [ ] No unnecessary abstractions
+- [ ] No "future-proofing" features not in the original request
+- [ ] No backwards compatibility or fallbacks unless explicitly requested
+- [ ] New files only for genuinely new components, not minor additions
+- [ ] No over-engineered patterns when simpler solutions work
 
 If validation fails, fix the plan before writing {{dex_path "plan.md"}}.
 
 CRITICAL RULES:
-- do NOT ask "should I proceed?"
-- do NOT use natural-language questions outside {{dex_path "questions.md"}}
-- do NOT write any code — only produce the plan or questions
-- when you write {{dex_path "plan.md"}} or {{dex_path "questions.md"}}, STOP immediately
+- DO NOT ask "Would you like to proceed?" or "Should I implement this?" or similar
+- DO NOT use natural-language questions outside {{dex_path "questions.md"}}
+- DO NOT write any code — only produce the plan or questions
+- DO NOT iterate or refine the plan after validation passes
+- When you write {{dex_path "plan.md"}} or {{dex_path "questions.md"}}, STOP immediately
 {{#if Feedbacks}}
 
 ── Previous feedback from the user ──
@@ -125,3 +133,5 @@ CRITICAL RULES:
 Revise the existing {{dex_path "plan.md"}} based on ALL feedback above.
 Do NOT ignore the current draft or start from scratch unless the feedback requires it.
 {{/if}}
+
+OUTPUT FORMAT: No markdown formatting in your response text (no **bold**, `code`, # headers). Plain text and - lists are fine. The plan FILE should use markdown.

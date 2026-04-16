@@ -1,27 +1,39 @@
-Best-effort finalize step for the implementation plan at `{{PlanPath}}`
+Post-completion finalize step for the implementation plan at `{{PlanPath}}`.
 
-Finalize the current feature branch against `{{FinalizeTarget}}`.
+Rebase your commits onto `{{FinalizeTarget}}` and organize them for merge.
 Do not invent a different base branch. Use `{{FinalizeTarget}}` exactly as given.
 
 Steps:
+
 1. Inspect branch status first:
    - run `git status --short --branch`
+
 {{#if FinalizeNeedsFetch}}
 2. Refresh the remote-tracking base ref:
    - run `git fetch origin`
 {{else}}
 2. No fetch is required for the local base ref `{{FinalizeTarget}}`.
 {{/if}}
+
 3. Rebase onto `{{FinalizeTarget}}`:
    - run `git rebase {{FinalizeTarget}}`
-   - if conflicts occur, resolve them and continue
-   - if rebase fails completely, abort with `git rebase --abort`
+   - if conflicts occur, resolve them and continue rebase
+   - if rebase fails completely, abort with `git rebase --abort` and report the issue
+
 4. Review commit history:
    - run `git log {{FinalizeTarget}}..HEAD --oneline`
-   - if there are many small fix commits, consider squashing them while keeping meaningful boundaries
-5. Verify the branch is ready:
-   - run the project's most relevant tests
-   - run the linter if applicable
+   - if there are many small fix commits, consider squashing them
+   - keep meaningful commit boundaries (feature commits separate from fix commits)
+
+5. Optional: Interactive rebase to clean up history:
+   - only if there are 5+ commits that could be logically combined
+   - run `git rebase -i {{FinalizeTarget}}`
+   - squash related fix commits into their parent feature commits
+   - reword commit messages if needed for clarity
+
+6. Verify the branch is ready:
+   - run tests using the project's test command (check plan file for the correct command)
+   - run linter if applicable
 
 Constraints:
 - This step is best-effort.
@@ -30,4 +42,6 @@ Constraints:
 - Do not reset the branch hard.
 - If cleanup or rebase fails, explain what happened in plain text but still finish successfully.
 
-OUTPUT FORMAT: No markdown tables. Plain text and simple `-` lists are fine.
+Report what was done.
+
+OUTPUT FORMAT: No markdown formatting (no **bold**, `code`, # headers). Plain text and - lists are fine.
