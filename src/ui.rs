@@ -19,7 +19,7 @@ const REVISION: &str = env!("CARGO_PKG_VERSION");
 /// Print the application header box in cyan with Unicode box-drawing characters.
 pub fn app_header() {
     let mut stream = stderr();
-    let line1 = "D E X ".to_owned()+REVISION;
+    let line1 = "DEX v".to_owned()+REVISION;
     let line2 = "Agentic Orchestrator";
     let width = line2.len() + 4; // padding
     let _ = writeln!(stream);
