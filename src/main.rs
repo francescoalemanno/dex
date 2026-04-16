@@ -174,6 +174,13 @@ fn main() {
         return;
     }
 
+    if let Some(ref name) = args.cli {
+        if let Err(e) = crate::runner::validate_cli_name(name) {
+            err_msg(&e);
+            exit(1);
+        }
+    }
+
     let command = match args.command {
         Some(cmd) => cmd,
         None => {
@@ -418,7 +425,16 @@ fn run_review(runner: &Runner, plan_path: &str) -> Result<(), String> {
 }
 
 fn resolve_cli(explicit: Option<String>) -> String {
-    explicit.unwrap_or_else(|| load_config().cli)
+    if let Some(name) = explicit {
+        return name;
+    }
+    if Path::new(&dex_path("config.json")).exists() {
+        return load_config().cli;
+    }
+    if let Some(first) = crate::runner::dex_available_agents().first() {
+        return first.to_string();
+    }
+    Config::default().cli
 }
 
 fn ensure_review_base_ref_snapshot() {
