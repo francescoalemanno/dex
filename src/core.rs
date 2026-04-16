@@ -6,7 +6,17 @@ use std::io::Write;
 use std::path::PathBuf;
 
 const DEX_DIR: &str = ".dex";
+const DEX_PROMPTS_DIR: &str = ".dex/prompts";
 const REVIEW_BASE_REF_FILE: &str = "review-base-ref.txt";
+
+const BUILTIN_TEMPLATES: &[(&str, &str)] = &[
+    ("bare.txt", include_str!("../prompts/bare.txt")),
+    ("finalize.txt", include_str!("../prompts/finalize.txt")),
+    ("fix.txt", include_str!("../prompts/fix.txt")),
+    ("impl.txt", include_str!("../prompts/impl.txt")),
+    ("plan.txt", include_str!("../prompts/plan.txt")),
+    ("review.txt", include_str!("../prompts/review.txt")),
+];
 
 fn template_engine() -> Handlebars<'static> {
     let mut hbs = Handlebars::new();
@@ -43,19 +53,30 @@ fn template_engine() -> Handlebars<'static> {
         ),
     );
 
-    let templates = [
-        ("bare.txt", include_str!("../prompts/bare.txt")),
-        ("finalize.txt", include_str!("../prompts/finalize.txt")),
-        ("fix.txt", include_str!("../prompts/fix.txt")),
-        ("impl.txt", include_str!("../prompts/impl.txt")),
-        ("plan.txt", include_str!("../prompts/plan.txt")),
-        ("review.txt", include_str!("../prompts/review.txt")),
-    ];
-    for (name, content) in templates {
+    for (name, builtin_content) in BUILTIN_TEMPLATES {
+        let content = load_user_prompt(name).unwrap_or_else(|| builtin_content.to_string());
         hbs.register_template_string(name, content)
             .unwrap_or_else(|e| panic!("template {}: {}", name, e));
     }
     hbs
+}
+
+fn load_user_prompt(name: &str) -> Option<String> {
+    let path = PathBuf::from(DEX_PROMPTS_DIR).join(name);
+    match fs::read_to_string(&path) {
+        Ok(content) if !content.trim().is_empty() => Some(content),
+        _ => None,
+    }
+}
+
+pub fn seed_prompts() {
+    fs::create_dir_all(DEX_PROMPTS_DIR).ok();
+    for (name, builtin_content) in BUILTIN_TEMPLATES {
+        let path = PathBuf::from(DEX_PROMPTS_DIR).join(name);
+        if !path.exists() {
+            fs::write(&path, builtin_content).ok();
+        }
+    }
 }
 
 pub fn render_prompt(name: &str, data: &Value) -> String {

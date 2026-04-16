@@ -328,7 +328,8 @@ fn process_stdout_line(text: &str, start: Instant, label: &str) -> bool {
 
     if let Ok(obj) = serde_json::from_str::<Value>(text) {
         if let Some(map) = obj.as_object() {
-            let texts = extract_texts(&Value::Object(map.clone()));
+            let mut texts: Vec<String> = Vec::new();
+            walk_json(&Value::Object(map.clone()), &mut texts);
             if !texts.is_empty() {
                 for t in &texts {
                     write_prefix(&mut stream, start, label);
@@ -342,12 +343,6 @@ fn process_stdout_line(text: &str, start: Instant, label: &str) -> bool {
     write_prefix(&mut stream, start, label);
     let _ = writeln!(stream, " {}", text);
     true
-}
-
-fn extract_texts(v: &Value) -> Vec<String> {
-    let mut out = Vec::new();
-    walk_json(v, &mut out);
-    out
 }
 
 fn walk_json(v: &Value, texts: &mut Vec<String>) {

@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use crate::core::{
     dex_path, ensure_dex_dir, load_config, load_review_base_ref, reset_dex_runtime_artifacts,
-    save_config, save_review_base_ref, Config,
+    save_config, save_review_base_ref, seed_prompts, Config,
 };
 use crate::phases::{
     bare_phase, finalize_phase, impl_phase, plan_phase, review_phase, PlanPhaseMode,
@@ -80,6 +80,9 @@ fn main() {
         println!("dex {}", REVISION);
         return;
     }
+
+    ensure_dex_dir();
+    seed_prompts();
 
     let defaults = load_config();
 
