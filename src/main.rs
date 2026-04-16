@@ -16,7 +16,7 @@ use crate::core::{
 };
 use crate::phases::{bare_phase, finalize_phase, impl_phase, plan_phase, review_phase};
 use crate::plan::validate_candidate_plan;
-use crate::runner::Runner;
+use crate::runner::{kill_all_children, Runner};
 use crate::ui::{banner, err_msg, info, prompt_choice, prompt_multiline, warn, write_dim};
 
 const REVISION: &str = env!("CARGO_PKG_VERSION");
@@ -150,7 +150,23 @@ impl From<String> for CmdError {
 
 // ── Main ──
 
+struct ChildGuard;
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        kill_all_children();
+    }
+}
+
 fn main() {
+    let _guard = ChildGuard;
+
+    ctrlc::set_handler(|| {
+        kill_all_children();
+        std::process::exit(130);
+    })
+    .ok();
+
     let args = parse_args();
 
     if args.version {
