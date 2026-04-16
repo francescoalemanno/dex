@@ -57,7 +57,7 @@ You need at least one supported coding CLI installed (`opencode`, `claude`, `cod
 Then just run it:
 
 ```bash
-dex "refactor the database layer to use connection pooling instead of per-request connections"
+dex run "refactor the database layer to use connection pooling instead of per-request connections"
 ```
 
 dex will explore your codebase, draft a plan, and ask you to approve it before writing a single line of code.
@@ -67,7 +67,7 @@ dex will explore your codebase, draft a plan, and ask you to approve it before w
 **Migrate an API from REST to gRPC:**
 
 ```bash
-dex "convert the user-facing REST API in server/api/ to gRPC, \
+dex run "convert the user-facing REST API in server/api/ to gRPC, \
      generate proto definitions from the existing route signatures, \
      keep the HTTP gateway for backwards compatibility"
 ```
@@ -75,7 +75,7 @@ dex "convert the user-facing REST API in server/api/ to gRPC, \
 **Add observability to an existing service:**
 
 ```bash
-dex "instrument all database queries and HTTP handlers in cmd/server \
+dex run "instrument all database queries and HTTP handlers in cmd/server \
      with OpenTelemetry tracing, add a /metrics endpoint exposing \
      request latency histograms and error rates in Prometheus format"
 ```
@@ -83,39 +83,51 @@ dex "instrument all database queries and HTTP handlers in cmd/server \
 **Use Claude instead of the default agent:**
 
 ```bash
-dex --cli claude "add structured JSON logging to the worker package, \
+dex --cli claude run "add structured JSON logging to the worker package, \
      replace all fmt.Printf calls with slog"
 ```
 
 **Resume from the dex state directory after a crash or interruption:**
 
 ```bash
-dex
+dex resume
+```
+
+**Revise an existing plan with new feedback:**
+
+```bash
+dex revise "use a different database library"
 ```
 
 **Import a prepared plan and execute it:**
 
 ```bash
-dex --plan myplan.md
+dex import myplan.md
 ```
 
-**Import a plan draft, adapt it to a new request, then approve the revision:**
+**Import a plan draft and revise it before execution:**
 
 ```bash
-dex --plan myplan.md "take this plan for a Go tool, but implement it in Rust"
+dex import myplan.md --revise "adjust the testing approach"
 ```
 
 **Raw agent loop for open-ended work (10 iterations):**
 
 ```bash
-dex --bare 10 "explore the codebase and improve test coverage \
+dex bare 10 "explore the codebase and improve test coverage \
      for any file under 60% branch coverage"
 ```
 
 **Finalize a feature branch for merge:**
 
 ```bash
-dex --finalize main
+dex finalize --onto main
+```
+
+**Force overwrite an existing plan:**
+
+```bash
+dex run --force "rewrite the auth module from scratch"
 ```
 
 ## How it works
@@ -155,17 +167,26 @@ Each writes findings to `.dex/review-<name>.md`. The review diff base is loaded 
 
 Then a focused review loop runs with only quality and implementation reviewers for up to 3 additional rounds. The phase ends when both report zero issues, or the cap is reached.
 
-## Flags
+## Subcommands
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--cli <name>` | `opencode` | Coding CLI to use |
+| Subcommand | Description |
+|------------|-------------|
+| `run <request>` | Plan, implement, and review a request. Use `--force` to overwrite an existing plan. |
+| `resume` | Resume an existing plan from where it left off. |
+| `revise <feedback>` | Revise an existing plan with new feedback, then continue. |
+| `bare <iterations> <request>` | Send a request straight to the agent for N iterations. |
+| `finalize --onto <target>` | Rebase, tidy commits, and rerun checks against the given target. |
+| `import <file> [--revise <feedback>]` | Import a markdown plan and execute it; optionally revise it first. |
+
+## Global options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--cli <name>` | auto-detected | Coding CLI to use; must be available in PATH |
 | `--timeout <seconds>` | `1200` | Kill the agent after this many idle seconds |
-| `--bare <iterations>` | | Bare mode: send the request straight to the agent for N iterations |
-| `--finalize` | `false` | Rebase, tidy commits, and rerun checks against the user-provided target |
-| `--plan <file.md>` | | Import a markdown plan; with an extra request, revise the imported draft before execution |
+| `--version` | | Print version and exit |
 
-`--cli` persists across runs in `.dex/config.json`, so you don't have to repeat `--cli claude` every time.
+`--cli` persists across runs in `.dex/config.json`, so you don't have to repeat `--cli claude` every time. When no `--cli` is given and no config exists, dex picks the first available agent it finds in PATH.
 
 ## Supported CLIs
 
