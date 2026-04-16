@@ -18,7 +18,7 @@ use crate::core::{
 use crate::phases::{bare_phase, finalize_phase, impl_phase, plan_phase, review_phase};
 use crate::plan::validate_candidate_plan;
 use crate::runner::{kill_all_children, Runner};
-use crate::ui::{banner, err_msg, info, prompt_choice, prompt_multiline, warn, write_dim};
+use crate::ui::{app_header, banner, err_msg, info, prompt_choice, prompt_multiline, warn};
 
 const REVISION: &str = env!("CARGO_PKG_VERSION");
 
@@ -242,8 +242,7 @@ fn main() {
 
     let cli_name = resolve_cli(args.cli);
 
-    let mut stream = termcolor::StandardStream::stderr(termcolor::ColorChoice::Auto);
-    write_dim(&mut stream, &format!("dex {}\n", REVISION));
+    app_header();
 
     let timeout = Duration::from_secs(args.timeout);
     let runner = match Runner::new(&cli_name, timeout) {

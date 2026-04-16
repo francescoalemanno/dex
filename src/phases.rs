@@ -10,7 +10,8 @@ use crate::core::{
 use crate::plan::{all_tasks_done, next_open_task};
 use crate::runner::Runner;
 use crate::ui::{
-    banner, err_msg, info, prompt_choice, prompt_multiline, show_block, show_markdown, warn,
+    banner, err_msg, info, phase_detail, prompt_choice, prompt_multiline, show_block, show_markdown,
+    warn,
 };
 
 // ── Phase 1: Planning ──
@@ -38,7 +39,7 @@ fn run_planning_loop(
 ) -> Result<Option<String>, String> {
     let mut iteration = 1;
     loop {
-        info(&format!("Planning iteration {}", iteration));
+        phase_detail("iteration", &iteration.to_string());
         iteration += 1;
 
         remove_dex_file("questions.md");
@@ -200,13 +201,16 @@ pub fn impl_phase(r: &Runner, plan_path: &str) -> Result<(), String> {
         } else {
             task.header.clone()
         };
-        info(&format!(
-            "Iteration {} — working on: {} ({}/{} steps open)",
-            iteration,
-            header,
-            task.open,
-            task.open + task.done
-        ));
+        phase_detail(
+            "progress",
+            &format!(
+                "iteration {} \u{2014} {}/{} tasks remaining",
+                iteration,
+                task.open,
+                task.open + task.done,
+            ),
+        );
+        phase_detail("task", &header);
         append_progress(
             &format!("Implementation — iteration {}", iteration),
             &format!(
@@ -478,10 +482,16 @@ fn run_review_fanout(
                 all_clean = false;
             }
             Some(review) => {
-                show_markdown(&format!("Review: {}", rv.name), &review);
-                if !is_clean_review(&review) {
+                if is_clean_review(&review) {
+                    info(&format!("[{}] ZERO ISSUES", rv.name));
+                } else {
+                    err_msg(&format!("[{}] issues found", rv.name));
+                    show_markdown(&format!("Review: {}", rv.name), &review);
                     all_clean = false;
-                    issues.push(format!("── {} ──\n{}", rv.name, review));
+                    issues.push(format!(
+                        "\u{2500}\u{2500} {} \u{2500}\u{2500}\n{}",
+                        rv.name, review
+                    ));
                 }
             }
         }
@@ -501,7 +511,7 @@ fn run_fixer(
     git_available: bool,
     issues: &[String],
 ) -> Result<(), String> {
-    info("Issues found — running fixer...");
+    warn("Running fixer...");
     let fix_prompt = render_prompt(
         "fix.txt",
         &serde_json::json!({
@@ -563,7 +573,7 @@ mod tests {
 pub fn bare_phase(r: &Runner, request: &str, max_iterations: usize) -> Result<(), String> {
     banner("BARE");
     for iteration in 1..=max_iterations {
-        info(&format!("Bare iteration {}/{}", iteration, max_iterations));
+        phase_detail("iteration", &format!("{}/{}", iteration, max_iterations));
         let p = render_prompt("bare.txt", &serde_json::json!({"Request": request}));
         if let Err(e) = r.run(&p) {
             return Err(format!("bare iteration {} failed: {}", iteration, e));

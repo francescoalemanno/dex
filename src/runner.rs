@@ -6,7 +6,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 use termcolor::{ColorChoice, StandardStream};
 
-use crate::ui::{err_msg, warn, write_timestamp};
+use crate::ui::{err_msg, phase_detail, warn, write_timestamp};
 
 static CHILDREN: Mutex<Vec<Arc<SharedChild>>> = Mutex::new(Vec::new());
 
@@ -213,6 +213,10 @@ impl Runner {
         if !cfg.stdin {
             args.push(prompt);
         }
+
+        // Show the exec command (without the prompt argument for readability)
+        let display_args: Vec<&str> = cfg.args.to_vec();
+        phase_detail("exec", &format!("{} {}", cfg.cmd, display_args.join(" ")));
 
         let mut cmd = Command::new(cfg.cmd);
         cmd.args(&args);
