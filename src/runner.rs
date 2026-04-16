@@ -95,21 +95,21 @@ pub fn dex_available_agents() -> Vec<&'static str> {
 }
 
 pub fn validate_cli_name(name: &str) -> Result<(), String> {
-    let agents = dex_available_agents();
-    let is_builtin = agents.contains(&name);
-    if !is_builtin {
-        let supported = agents.join(", ");
-        return Err(match agents.len() {
-            0 => format!(
-                "unknown CLI {:?}; supported agents: {}; none are currently available in PATH",
-                name, supported
-            ),
-            _ => format!(
-                "unknown CLI {:?}; choose one of the agents currently available in PATH: {}",
-                name,
-                agents.join(", ")
-            ),
-        });
+    let known = CLI_CONFIGS.iter().any(|(k, _)| *k == name);
+    if !known {
+        let all_names: Vec<&str> = CLI_CONFIGS.iter().map(|(k, _)| *k).collect();
+        return Err(format!(
+            "unknown CLI {:?}; supported agents: {}",
+            name,
+            all_names.join(", ")
+        ));
+    }
+    let cfg = &CLI_CONFIGS.iter().find(|(k, _)| *k == name).unwrap().1;
+    if which::which(cfg.cmd).is_err() {
+        return Err(format!(
+            "CLI {:?} is not available in PATH (command {:?} not found)",
+            name, cfg.cmd
+        ));
     }
     Ok(())
 }

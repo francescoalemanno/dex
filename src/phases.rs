@@ -3,8 +3,8 @@ use std::fs;
 use std::process::Command;
 
 use crate::core::{
-    append_progress, dex_path, ensure_dex_dir, load_feedbacks, read_dex_file, remove_dex_file,
-    render_prompt, reset_dex_runtime_artifacts, save_feedbacks, save_plan_request,
+    append_progress, dex_path, ensure_dex_dir, read_dex_file, remove_dex_file, render_prompt,
+    save_feedbacks, save_plan_request,
 };
 use crate::plan::{all_tasks_done, next_open_task};
 use crate::runner::Runner;
@@ -14,112 +14,19 @@ use crate::ui::{
 
 // ── Phase 1: Planning ──
 
-const EXISTING_PLAN_CHOICE_PROMPT: &str =
-    "Is your request a revision of this plan, a new plan, or should dex quit? Resume the current plan by running dex without a request.";
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PlanPhaseResult {
-    pub plan_path: String,
-    pub created_new_plan: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlanPhaseMode {
-    Standard,
-    ReviseImportedDraft,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PlanningSeed {
-    request: String,
-    feedbacks: Vec<String>,
-    created_new_plan: bool,
-}
-
-fn should_refresh_review_base_ref_after_planning(
-    has_existing_plan: bool,
-    choice: Option<&str>,
-) -> bool {
-    !has_existing_plan || matches!(choice, Some("new"))
-}
-
 pub fn plan_phase(
     r: &Runner,
-    user_input: &str,
-    mode: PlanPhaseMode,
-) -> Result<Option<PlanPhaseResult>, String> {
+    request: &str,
+    feedbacks: Vec<String>,
+) -> Result<Option<String>, String> {
     banner("PLANNING");
     ensure_dex_dir();
 
     let plan_path = dex_path("plan.md");
-    let seed = match mode {
-        PlanPhaseMode::Standard => prepare_standard_plan_seed(user_input)?,
-        PlanPhaseMode::ReviseImportedDraft => prepare_imported_plan_seed(user_input)?,
-    };
-    let PlanningSeed {
-        request,
-        feedbacks,
-        created_new_plan,
-    } = match seed {
-        Some(seed) => seed,
-        None => return Ok(None),
-    };
-
-    save_plan_request(&request);
+    save_plan_request(request);
     save_feedbacks(&feedbacks);
 
-    run_planning_loop(r, request, feedbacks, plan_path, created_new_plan)
-}
-
-fn prepare_standard_plan_seed(user_input: &str) -> Result<Option<PlanningSeed>, String> {
-    let mut feedbacks: Vec<String> = Vec::new();
-    let mut request = user_input.to_string();
-    let existing_plan = read_dex_file("plan.md");
-    let mut created_new_plan =
-        should_refresh_review_base_ref_after_planning(existing_plan.is_some(), None);
-
-    if let Some(existing) = existing_plan {
-        show_markdown("Existing plan", &existing);
-        let choice = prompt_choice(EXISTING_PLAN_CHOICE_PROMPT, &["revise", "new", "quit"]);
-        created_new_plan =
-            should_refresh_review_base_ref_after_planning(true, Some(choice.as_str()));
-        match choice.as_str() {
-            "new" => reset_dex_runtime_artifacts(),
-            "revise" => {
-                if let Some(orig) = read_dex_file("request.txt") {
-                    request = orig;
-                }
-                feedbacks = load_feedbacks();
-                feedbacks.push(user_input.to_string());
-            }
-            "quit" => {
-                info("Exiting without changing the current plan.");
-                return Ok(None);
-            }
-            _ => {}
-        }
-    }
-
-    Ok(Some(PlanningSeed {
-        request,
-        feedbacks,
-        created_new_plan,
-    }))
-}
-
-fn prepare_imported_plan_seed(user_input: &str) -> Result<Option<PlanningSeed>, String> {
-    if read_dex_file("plan.md").is_none() {
-        return Err(format!(
-            "imported plan revision requested, but {} is missing",
-            dex_path("plan.md")
-        ));
-    }
-
-    Ok(Some(PlanningSeed {
-        request: user_input.to_string(),
-        feedbacks: Vec::new(),
-        created_new_plan: true,
-    }))
+    run_planning_loop(r, request.to_string(), feedbacks, plan_path)
 }
 
 fn run_planning_loop(
@@ -127,8 +34,7 @@ fn run_planning_loop(
     request: String,
     mut feedbacks: Vec<String>,
     plan_path: String,
-    created_new_plan: bool,
-) -> Result<Option<PlanPhaseResult>, String> {
+) -> Result<Option<String>, String> {
     let mut iteration = 1;
     loop {
         info(&format!("Planning iteration {}", iteration));
@@ -177,24 +83,21 @@ fn run_planning_loop(
 
         show_markdown("Plan", &plan);
 
-        let choice = prompt_choice(
-            "Accept, edit, revise, or reject?",
-            &["accept", "edit", "revise", "reject"],
-        );
-        match choice.as_str() {
-            "accept" => {
-                info("Plan accepted!");
-                return Ok(Some(PlanPhaseResult {
-                    plan_path: plan_path.clone(),
-                    created_new_plan,
-                }));
-            }
-            "reject" => {
-                warn("Plan rejected.");
-                return Ok(None);
-            }
-            "edit" => {
-                match edit_plan_in_editor(&plan) {
+        loop {
+            let choice = prompt_choice(
+                "Accept, edit, revise, or reject?",
+                &["accept", "edit", "revise", "reject"],
+            );
+            match choice.as_str() {
+                "accept" => {
+                    info("Plan accepted!");
+                    return Ok(Some(plan_path.clone()));
+                }
+                "reject" => {
+                    warn("Plan rejected.");
+                    return Ok(None);
+                }
+                "edit" => match edit_plan_in_editor(&plan) {
                     Ok(Some(diff)) => {
                         let feedback = format!(
                             "user provided feedback in the form of a unified diff: \n\n{}",
@@ -202,19 +105,23 @@ fn run_planning_loop(
                         );
                         feedbacks.push(feedback);
                         save_feedbacks(&feedbacks);
+                        break;
                     }
-                    Ok(None) => {} // no changes
+                    Ok(None) => {
+                        info("No changes detected in the plan.");
+                    }
                     Err(e) => {
                         err_msg(&format!("Editor error: {}", e));
                     }
+                },
+                "revise" => {
+                    let feedback = prompt_multiline("Your revision feedback:");
+                    feedbacks.push(feedback);
+                    save_feedbacks(&feedbacks);
+                    break;
                 }
+                _ => {}
             }
-            "revise" => {
-                let feedback = prompt_multiline("Your revision feedback:");
-                feedbacks.push(feedback);
-                save_feedbacks(&feedbacks);
-            }
-            _ => {}
         }
     }
 }
@@ -616,33 +523,7 @@ fn is_clean_review(review: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        should_refresh_review_base_ref_after_planning, BROAD_REVIEWERS,
-        EXISTING_PLAN_CHOICE_PROMPT, FOCUSED_REVIEWERS,
-    };
-
-    #[test]
-    fn existing_plan_prompt_mentions_quit_and_resume_behavior() {
-        assert!(EXISTING_PLAN_CHOICE_PROMPT.contains("quit"));
-        assert!(EXISTING_PLAN_CHOICE_PROMPT.contains("without a request"));
-    }
-
-    #[test]
-    fn review_base_ref_refreshes_only_for_new_plans() {
-        assert!(should_refresh_review_base_ref_after_planning(false, None));
-        assert!(should_refresh_review_base_ref_after_planning(
-            true,
-            Some("new")
-        ));
-        assert!(!should_refresh_review_base_ref_after_planning(
-            true,
-            Some("revise")
-        ));
-        assert!(!should_refresh_review_base_ref_after_planning(
-            true,
-            Some("quit")
-        ));
-    }
+    use super::{BROAD_REVIEWERS, FOCUSED_REVIEWERS};
 
     #[test]
     fn focused_reviewer_names_do_not_overlap_with_broad_reviewers() {

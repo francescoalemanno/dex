@@ -11,37 +11,37 @@ use std::process::{exit, Command};
 use std::time::Duration;
 
 use crate::core::{
-    dex_path, ensure_dex_dir, load_config, load_review_base_ref, reset_dex_runtime_artifacts,
-    save_config, save_review_base_ref, seed_prompts, Config,
+    dex_path, ensure_dex_dir, load_config, load_feedbacks, load_review_base_ref, read_dex_file,
+    reset_dex_runtime_artifacts, save_config, save_review_base_ref, seed_prompts, Config,
 };
-use crate::phases::{
-    bare_phase, finalize_phase, impl_phase, plan_phase, review_phase, PlanPhaseMode,
-};
+use crate::phases::{bare_phase, finalize_phase, impl_phase, plan_phase, review_phase};
 use crate::plan::validate_candidate_plan;
 use crate::runner::Runner;
 use crate::ui::{banner, err_msg, info, prompt_choice, prompt_multiline, warn, write_dim};
 
 const REVISION: &str = env!("CARGO_PKG_VERSION");
-const IMPORT_PLAN_CHOICE_PROMPT: &str =
-    "A plan already exists in .dex/plan.md. Should dex replace it or quit?";
+
 const HELP_EXAMPLES_SECTION: &str = concat!(
     "\nExamples:\n",
-    "  Normal guided run:\n",
-    "    dex \"add structured logging to the API and update tests\"\n",
+    "  New guided run:\n",
+    "    dex run \"add structured logging to the API and update tests\"\n",
     "  Resume a saved plan:\n",
-    "    dex\n",
-    "  Execute an imported plan:\n",
-    "    dex --plan myplan.md\n",
+    "    dex resume\n",
+    "  Revise an existing plan:\n",
+    "    dex revise \"use a different database library\"\n",
     "  Open-ended bare loop:\n",
-    "    dex --bare 10 \"explore the repo and improve test coverage\"\n",
+    "    dex bare 10 \"explore the repo and improve test coverage\"\n",
     "  Finalize a feature branch:\n",
-    "    dex --finalize main\n",
+    "    dex finalize --onto main\n",
+    "  Execute an imported plan:\n",
+    "    dex import myplan.md\n",
+    "  Import and revise before execution:\n",
+    "    dex import myplan.md --revise \"adjust the testing approach\"\n",
 );
 
+// ── CLI argument definitions ──
+
 /// dex — AI-powered development workflow
-///
-/// Normal mode plans, implements, and reviews a request.
-/// `--finalize` is a separate rerun step for an already-implemented branch.
 #[derive(FromArgs)]
 struct Args {
     /// print version and exit
@@ -49,29 +49,106 @@ struct Args {
     version: bool,
 
     /// coding CLI to use; must be available in PATH
-    #[argh(option, arg_name = "name", from_str_fn(parse_cli_name))]
+    #[argh(option, arg_name = "name")]
     cli: Option<String>,
 
     /// kill agent after this many seconds idle
     #[argh(option, default = "1200")]
     timeout: u64,
 
-    /// bare mode: send request straight to agent for N iterations
-    #[argh(option, default = "0")]
-    bare: usize,
+    #[argh(subcommand)]
+    command: Option<SubCommand>,
+}
 
-    /// finalize an existing feature branch against a user-provided rebase target
+#[derive(FromArgs)]
+#[argh(subcommand)]
+enum SubCommand {
+    Run(RunCmd),
+    Resume(ResumeCmd),
+    Revise(ReviseCmd),
+    Bare(BareCmd),
+    Finalize(FinalizeCmd),
+    Import(ImportCmd),
+}
+
+/// plan, implement, and review a request
+#[derive(FromArgs)]
+#[argh(subcommand, name = "run")]
+struct RunCmd {
+    /// overwrite an existing plan and start fresh
     #[argh(switch)]
-    finalize: bool,
+    force: bool,
 
-    /// import a markdown plan; with an extra request, revise the imported draft before execution
-    #[argh(option, arg_name = "file.md")]
-    plan: Option<String>,
-
-    /// request text, or the rebase target when used with --finalize
+    /// request text
     #[argh(positional, greedy)]
     request: Vec<String>,
 }
+
+/// resume an existing plan from where it left off
+#[derive(FromArgs)]
+#[argh(subcommand, name = "resume")]
+struct ResumeCmd {}
+
+/// revise an existing plan with new feedback, then continue
+#[derive(FromArgs)]
+#[argh(subcommand, name = "revise")]
+struct ReviseCmd {
+    /// revision feedback
+    #[argh(positional, greedy)]
+    feedback: Vec<String>,
+}
+
+/// send a request straight to the agent for N iterations
+#[derive(FromArgs)]
+#[argh(subcommand, name = "bare")]
+struct BareCmd {
+    /// number of iterations
+    #[argh(positional)]
+    iterations: usize,
+
+    /// request text
+    #[argh(positional, greedy)]
+    request: Vec<String>,
+}
+
+/// finalize a feature branch against a rebase target
+#[derive(FromArgs)]
+#[argh(subcommand, name = "finalize")]
+struct FinalizeCmd {
+    /// rebase target (e.g. main, origin/main)
+    #[argh(option)]
+    onto: String,
+}
+
+/// import a markdown plan and execute it
+#[derive(FromArgs)]
+#[argh(subcommand, name = "import")]
+struct ImportCmd {
+    /// path to the markdown plan file
+    #[argh(positional)]
+    file: String,
+
+    /// optional revision feedback; revise the imported plan before execution
+    #[argh(option)]
+    revise: Option<String>,
+}
+
+// ── Exit handling ──
+
+type CmdResult = Result<(), CmdError>;
+
+enum CmdError {
+    Failure(String),
+    Cancelled,
+}
+
+impl From<String> for CmdError {
+    fn from(s: String) -> Self {
+        CmdError::Failure(s)
+    }
+}
+
+// ── Main ──
 
 fn main() {
     let args = parse_args();
@@ -81,202 +158,239 @@ fn main() {
         return;
     }
 
+    let command = match args.command {
+        Some(cmd) => cmd,
+        None => {
+            print_help();
+            return;
+        }
+    };
+
     ensure_dex_dir();
     seed_prompts();
 
-    let defaults = load_config();
-
-    let mut cli_name = args.cli.unwrap_or_else(|| defaults.cli.clone());
-    let available_agents = crate::runner::dex_available_agents();
-    let original_cli_name = cli_name.clone();
-    cli_name = match normalize_active_cli(&cli_name, &available_agents) {
-        Ok(name) => name,
-        Err(e) => {
-            eprintln!("{}", e);
-            exit(1);
-        }
-    };
-    if cli_name != original_cli_name {
-        warn(&format!(
-            "Active CLI {:?} is unavailable; switching to {:?}.",
-            original_cli_name, cli_name
-        ));
-    }
-    let timeout = Duration::from_secs(args.timeout);
-    let bare = args.bare;
-    let do_finalize = args.finalize;
-    let imported_plan = args.plan;
-    let positionals = args.request;
-
-    if imported_plan.is_some() && bare > 0 {
-        err_msg("--plan cannot be used together with --bare");
-        exit(1);
-    }
-    if imported_plan.is_some() && do_finalize {
-        err_msg("--plan cannot be used together with --finalize");
-        exit(1);
-    }
-
-    let mut request = if do_finalize {
-        String::new()
-    } else {
-        positionals.join(" ")
-    };
-    let default_plan_path = dex_path("plan.md");
-    let resume_existing_plan = imported_plan.is_none()
-        && request.trim().is_empty()
-        && Path::new(&default_plan_path).exists();
+    let cli_name = resolve_cli(args.cli);
 
     let mut stream = termcolor::StandardStream::stderr(termcolor::ColorChoice::Auto);
     write_dim(&mut stream, &format!("dex {}\n", REVISION));
 
+    let timeout = Duration::from_secs(args.timeout);
     let runner = match Runner::new(&cli_name, timeout) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("{}", e);
+            err_msg(&e);
             exit(1);
         }
     };
 
-    // Persist stable preferences only after validating the CLI name.
     save_config(&Config {
         cli: cli_name.clone(),
     });
 
-    // ── Bare mode ──
-    if bare > 0 {
-        if request.is_empty() {
-            request = prompt_multiline("Enter your request:");
-            if request.trim().is_empty() {
-                exit(1);
-            }
-        }
-        if let Err(e) = bare_phase(&runner, &request, bare) {
-            err_msg(&e.to_string());
-            exit(1);
-        }
-        banner("DONE");
-        info("Bare mode complete.");
-        return;
-    }
-
-    // ── Finalize-only mode ──
-    if do_finalize {
-        let finalize_target = match parse_finalize_target(&positionals) {
-            Ok(target) => target,
-            Err(e) => {
-                err_msg(&e);
-                exit(1);
-            }
-        };
-        if let Err(e) = finalize_phase(&runner, &default_plan_path, &finalize_target) {
-            err_msg(&e.to_string());
-            exit(1);
-        }
-        banner("DONE");
-        info("Finalize complete.");
-        return;
-    }
-
-    // ── Standard guided mode ──
-    if imported_plan.is_none() && request.trim().is_empty() && !resume_existing_plan {
-        request = prompt_multiline("Enter your request:");
-        if request.trim().is_empty() {
-            exit(1);
-        }
-    }
-
-    // Phase 1: Planning
-    let (plan_path, refresh_review_base_ref) = if let Some(candidate_path) =
-        imported_plan.as_deref()
-    {
-        let imported_plan_path = match import_plan(candidate_path) {
-            Ok(Some(plan_path)) => plan_path,
-            Ok(None) => exit(0),
-            Err(e) => {
-                err_msg(&e);
-                exit(1);
-            }
-        };
-
-        if request.trim().is_empty() {
-            info(&format!(
-                "Starting from imported plan at {}",
-                imported_plan_path
-            ));
-            (imported_plan_path, true)
-        } else {
-            info("Imported plan will be revised against the provided request before execution.");
-            match plan_phase(&runner, &request, PlanPhaseMode::ReviseImportedDraft) {
-                Ok(Some(result)) => (result.plan_path, result.created_new_plan),
-                Ok(None) => exit(0),
-                Err(e) => {
-                    err_msg(&e.to_string());
-                    exit(1);
-                }
-            }
-        }
-    } else if resume_existing_plan {
-        info(&format!("Resuming existing plan at {}", default_plan_path));
-        (default_plan_path, false)
-    } else {
-        match plan_phase(&runner, &request, PlanPhaseMode::Standard) {
-            Ok(Some(result)) => (result.plan_path, result.created_new_plan),
-            Ok(None) => exit(0),
-            Err(e) => {
-                err_msg(&e.to_string());
-                exit(1);
-            }
-        }
+    let result = match command {
+        SubCommand::Run(cmd) => cmd_run(&runner, cmd),
+        SubCommand::Resume(_) => cmd_resume(&runner),
+        SubCommand::Revise(cmd) => cmd_revise(&runner, cmd),
+        SubCommand::Bare(cmd) => cmd_bare(&runner, cmd),
+        SubCommand::Finalize(cmd) => cmd_finalize(&runner, cmd),
+        SubCommand::Import(cmd) => cmd_import(&runner, cmd),
     };
 
-    if let Err(e) = run_guided_workflow(&runner, &plan_path, refresh_review_base_ref) {
-        err_msg(&e.to_string());
-        exit(1);
+    match result {
+        Ok(()) => {}
+        Err(CmdError::Cancelled) => exit(2),
+        Err(CmdError::Failure(msg)) => {
+            err_msg(&msg);
+            exit(1);
+        }
     }
+}
+
+// ── Subcommand handlers ──
+
+fn cmd_run(runner: &Runner, cmd: RunCmd) -> CmdResult {
+    let plan_path = dex_path("plan.md");
+
+    if Path::new(&plan_path).exists() && !cmd.force {
+        return Err(CmdError::Failure(
+            "A plan already exists. Use `dex resume`, `dex revise`, or `dex run --force`.".into(),
+        ));
+    }
+
+    if cmd.force && Path::new(&plan_path).exists() {
+        info("Clearing existing artifacts (plan, progress, feedbacks, reviews).");
+        reset_dex_runtime_artifacts();
+    }
+
+    preflight_git()?;
+
+    let mut request = cmd.request.join(" ");
+    if request.trim().is_empty() {
+        request = prompt_multiline("Enter your request:");
+        if request.trim().is_empty() {
+            return Err(CmdError::Cancelled);
+        }
+    }
+
+    ensure_review_base_ref_snapshot();
+
+    match plan_phase(runner, &request, Vec::new())? {
+        Some(_) => {}
+        None => return Err(CmdError::Cancelled),
+    }
+
+    impl_phase(runner, &plan_path)?;
+    run_review(runner, &plan_path)?;
 
     banner("DONE");
     info("All phases complete.");
+    Ok(())
 }
 
-fn import_plan(candidate_path: &str) -> Result<Option<String>, String> {
-    validate_candidate_plan(candidate_path)?;
-    let imported_plan = fs::read_to_string(candidate_path)
-        .map_err(|e| format!("read imported plan {:?}: {}", candidate_path, e))?;
+fn cmd_resume(runner: &Runner) -> CmdResult {
     let plan_path = dex_path("plan.md");
 
+    if !Path::new(&plan_path).exists() {
+        return Err(CmdError::Failure(
+            "No plan exists. Use `dex run` to start a new workflow.".into(),
+        ));
+    }
+
+    preflight_git()?;
+
+    info(&format!("Resuming existing plan at {}", plan_path));
+
+    impl_phase(runner, &plan_path)?;
+    run_review(runner, &plan_path)?;
+
+    banner("DONE");
+    info("All phases complete.");
+    Ok(())
+}
+
+fn cmd_revise(runner: &Runner, cmd: ReviseCmd) -> CmdResult {
+    let plan_path = dex_path("plan.md");
+
+    if !Path::new(&plan_path).exists() {
+        return Err(CmdError::Failure(
+            "No plan exists to revise. Use `dex run` to start a new workflow.".into(),
+        ));
+    }
+
+    preflight_git()?;
+
+    let mut feedback = cmd.feedback.join(" ");
+    if feedback.trim().is_empty() {
+        feedback = prompt_multiline("Enter your revision feedback:");
+        if feedback.trim().is_empty() {
+            return Err(CmdError::Cancelled);
+        }
+    }
+
+    let request = read_dex_file("request.txt").unwrap_or_else(|| feedback.clone());
+    let mut feedbacks = load_feedbacks();
+    feedbacks.push(feedback);
+
+    match plan_phase(runner, &request, feedbacks)? {
+        Some(_) => {}
+        None => return Err(CmdError::Cancelled),
+    }
+
+    impl_phase(runner, &plan_path)?;
+    run_review(runner, &plan_path)?;
+
+    banner("DONE");
+    info("All phases complete.");
+    Ok(())
+}
+
+fn cmd_bare(runner: &Runner, cmd: BareCmd) -> CmdResult {
+    let mut request = cmd.request.join(" ");
+    if request.trim().is_empty() {
+        request = prompt_multiline("Enter your request:");
+        if request.trim().is_empty() {
+            return Err(CmdError::Cancelled);
+        }
+    }
+
+    bare_phase(runner, &request, cmd.iterations)?;
+
+    banner("DONE");
+    info("Bare mode complete.");
+    Ok(())
+}
+
+fn cmd_finalize(runner: &Runner, cmd: FinalizeCmd) -> CmdResult {
+    let plan_path = dex_path("plan.md");
+
+    finalize_phase(runner, &plan_path, &cmd.onto)?;
+
+    banner("DONE");
+    info("Finalize complete.");
+    Ok(())
+}
+
+fn cmd_import(runner: &Runner, cmd: ImportCmd) -> CmdResult {
+    let plan_path = dex_path("plan.md");
+
+    validate_candidate_plan(&cmd.file)?;
+    let imported_plan = fs::read_to_string(&cmd.file)
+        .map_err(|e| format!("read imported plan {:?}: {}", cmd.file, e))?;
+
     if Path::new(&plan_path).exists() {
-        let choice = prompt_choice(IMPORT_PLAN_CHOICE_PROMPT, &["replace", "quit"]);
+        let choice = prompt_choice(
+            "A plan already exists. Replace it or quit?",
+            &["replace", "quit"],
+        );
         if choice == "quit" {
-            info("Exiting without changing the current plan.");
-            return Ok(None);
+            return Err(CmdError::Cancelled);
         }
     }
 
     ensure_dex_dir();
     reset_dex_runtime_artifacts();
-    fs::write(&plan_path, imported_plan)
+    fs::write(&plan_path, &imported_plan)
         .map_err(|e| format!("write imported plan to {}: {}", plan_path, e))?;
-    Ok(Some(plan_path))
-}
 
-fn run_guided_workflow(
-    runner: &Runner,
-    plan_path: &str,
-    refresh_review_base_ref: bool,
-) -> Result<(), String> {
-    // Snapshot the review base BEFORE implementation so review diffs cover impl commits.
-    if refresh_review_base_ref {
-        ensure_review_base_ref_snapshot();
+    preflight_git()?;
+    ensure_review_base_ref_snapshot();
+
+    if let Some(revision) = cmd.revise {
+        info("Imported plan will be revised before execution.");
+        match plan_phase(runner, &revision, Vec::new())? {
+            Some(_) => {}
+            None => return Err(CmdError::Cancelled),
+        }
+    } else {
+        info(&format!("Starting from imported plan at {}", cmd.file));
     }
 
-    impl_phase(runner, plan_path)?;
+    impl_phase(runner, &plan_path)?;
+    run_review(runner, &plan_path)?;
 
+    banner("DONE");
+    info("All phases complete.");
+    Ok(())
+}
+
+// ── Shared helpers ──
+
+fn preflight_git() -> CmdResult {
+    if git_trimmed_output(&["rev-parse", "--is-inside-work-tree"]).is_ok() {
+        return Ok(());
+    }
+    warn("Not inside a git repository. Review will run without diff context.");
+    let choice = prompt_choice("Continue anyway?", &["yes", "no"]);
+    if choice == "no" {
+        return Err(CmdError::Cancelled);
+    }
+    Ok(())
+}
+
+fn run_review(runner: &Runner, plan_path: &str) -> Result<(), String> {
     let review_ctx = load_review_context();
     if !review_ctx.git_available {
-        warn(
-            "Review base metadata is unavailable; review will run in best-effort mode without git diff context.",
-        );
+        warn("Review base ref is unavailable; review will run without git diff context.");
     }
 
     review_phase(
@@ -287,26 +401,69 @@ fn run_guided_workflow(
     )
 }
 
-fn normalize_active_cli(preferred: &str, available: &[&str]) -> Result<String, String> {
-    if available.contains(&preferred) {
-        return Ok(preferred.to_string());
+fn resolve_cli(explicit: Option<String>) -> String {
+    explicit.unwrap_or_else(|| load_config().cli)
+}
+
+fn ensure_review_base_ref_snapshot() {
+    if load_review_base_ref().is_some() {
+        return;
     }
 
-    available
-        .first()
-        .map(|candidate| (*candidate).to_string())
-        .ok_or_else(|| {
-            format!(
-                "Active CLI {:?} is unavailable and no supported agents were found in PATH.",
-                preferred
-            )
-        })
+    let review_base_ref = resolve_current_head_for_review();
+    save_review_base_ref(review_base_ref.as_deref());
 }
 
-fn parse_cli_name(value: &str) -> Result<String, String> {
-    crate::runner::validate_cli_name(value)?;
-    Ok(value.to_string())
+struct ReviewContext {
+    base_ref: Option<String>,
+    git_available: bool,
 }
+
+fn load_review_context() -> ReviewContext {
+    if git_trimmed_output(&["rev-parse", "--is-inside-work-tree"]).is_err() {
+        return ReviewContext {
+            base_ref: None,
+            git_available: false,
+        };
+    }
+
+    let base_ref = load_review_base_ref().and_then(|base_ref| {
+        git_trimmed_output(&["rev-parse", "--verify", &base_ref])
+            .ok()
+            .map(|_| base_ref)
+    });
+
+    ReviewContext {
+        git_available: base_ref.is_some(),
+        base_ref,
+    }
+}
+
+fn resolve_current_head_for_review() -> Option<String> {
+    if git_trimmed_output(&["rev-parse", "--is-inside-work-tree"]).is_err() {
+        return None;
+    }
+    git_trimmed_output(&["rev-parse", "HEAD"]).ok()
+}
+
+fn git_trimmed_output(args: &[&str]) -> Result<String, String> {
+    let out = Command::new("git")
+        .args(args)
+        .output()
+        .map_err(|e| format!("git {}: {}", args.join(" "), e))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        let detail = if stderr.is_empty() {
+            format!("exit {}", out.status)
+        } else {
+            stderr
+        };
+        return Err(format!("git {}: {}", args.join(" "), detail));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+// ── Arg parsing & help ──
 
 fn parse_args() -> Args {
     let strings: Vec<String> = std::env::args_os()
@@ -346,6 +503,14 @@ fn parse_args() -> Args {
             }
         })
     })
+}
+
+fn print_help() {
+    let help = format!("dex {}\n\nRun `dex --help` for usage.", REVISION);
+    print!(
+        "{}",
+        render_help_output_with(&help, &crate::runner::dex_available_agents(),)
+    );
 }
 
 fn base_command_name(path: &str) -> &str {
@@ -388,19 +553,8 @@ fn available_agents_help_section_with(available: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        available_agents_help_section_with, normalize_active_cli, parse_finalize_target,
-        render_help_output_with, HELP_EXAMPLES_SECTION,
+        available_agents_help_section_with, render_help_output_with, HELP_EXAMPLES_SECTION,
     };
-
-    #[test]
-    fn finalize_requires_exactly_one_target() {
-        assert_eq!(
-            parse_finalize_target(&["origin/main".to_string()]).unwrap(),
-            "origin/main"
-        );
-        assert!(parse_finalize_target(&[]).is_err());
-        assert!(parse_finalize_target(&["main".to_string(), "extra".to_string()]).is_err());
-    }
 
     #[test]
     fn help_section_lists_available_agents() {
@@ -431,100 +585,4 @@ mod tests {
             )
         );
     }
-
-    #[test]
-    fn keeps_active_cli_when_it_is_available() {
-        assert_eq!(
-            normalize_active_cli("codex", &["codex", "gemini"]).unwrap(),
-            "codex"
-        );
-    }
-
-    #[test]
-    fn switches_active_cli_to_first_available() {
-        assert_eq!(
-            normalize_active_cli("claude", &["codex", "gemini"]).unwrap(),
-            "codex"
-        );
-    }
-
-    #[test]
-    fn errors_when_no_agents_are_available() {
-        assert_eq!(
-            normalize_active_cli("claude", &[]).unwrap_err(),
-            "Active CLI \"claude\" is unavailable and no supported agents were found in PATH."
-        );
-    }
-}
-
-struct ReviewContext {
-    base_ref: Option<String>,
-    git_available: bool,
-}
-
-fn parse_finalize_target(args: &[String]) -> Result<String, String> {
-    match args {
-        [target] if !target.trim().is_empty() => Ok(target.clone()),
-        [] => {
-            Err("finalize requires a rebase target: dex --finalize <target-for-rebase>".to_string())
-        }
-        _ => Err(
-            "finalize accepts exactly one rebase target: dex --finalize <target-for-rebase>"
-                .to_string(),
-        ),
-    }
-}
-
-fn ensure_review_base_ref_snapshot() {
-    if load_review_base_ref().is_some() {
-        return;
-    }
-
-    let review_base_ref = resolve_current_head_for_review();
-    save_review_base_ref(review_base_ref.as_deref());
-}
-
-fn load_review_context() -> ReviewContext {
-    if git_trimmed_output(&["rev-parse", "--is-inside-work-tree"]).is_err() {
-        return ReviewContext {
-            base_ref: None,
-            git_available: false,
-        };
-    }
-
-    let base_ref = load_review_base_ref().and_then(|base_ref| {
-        git_trimmed_output(&["rev-parse", "--verify", &base_ref])
-            .ok()
-            .map(|_| base_ref)
-    });
-
-    ReviewContext {
-        git_available: base_ref.is_some(),
-        base_ref,
-    }
-}
-
-fn resolve_current_head_for_review() -> Option<String> {
-    if git_trimmed_output(&["rev-parse", "--is-inside-work-tree"]).is_err() {
-        return None;
-    }
-
-    git_trimmed_output(&["rev-parse", "HEAD"]).ok()
-}
-
-fn git_trimmed_output(args: &[&str]) -> Result<String, String> {
-    let out = Command::new("git")
-        .args(args)
-        .output()
-        .map_err(|e| format!("git {}: {}", args.join(" "), e))?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        let detail = if stderr.is_empty() {
-            format!("exit {}", out.status)
-        } else {
-            stderr
-        };
-        return Err(format!("git {}: {}", args.join(" "), detail));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
