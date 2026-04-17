@@ -10,13 +10,13 @@ use crate::ui::{err_msg, phase_detail, warn, write_timestamp};
 
 static CHILDREN: Mutex<Vec<Arc<SharedChild>>> = Mutex::new(Vec::new());
 
-fn track_child(child: &Arc<SharedChild>) {
+pub(crate) fn track_child(child: &Arc<SharedChild>) {
     if let Ok(mut children) = CHILDREN.lock() {
         children.push(Arc::clone(child));
     }
 }
 
-fn untrack_child(child: &Arc<SharedChild>) {
+pub(crate) fn untrack_child(child: &Arc<SharedChild>) {
     if let Ok(mut children) = CHILDREN.lock() {
         children.retain(|c| c.id() != child.id());
     }

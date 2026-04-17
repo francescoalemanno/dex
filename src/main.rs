@@ -1,6 +1,7 @@
 mod core;
 mod phases;
 mod plan;
+mod research;
 mod runner;
 mod ui;
 
@@ -58,6 +59,7 @@ enum SubCommand {
     Review(ReviewCmd),
     Bare(BareCmd),
     Finalize(FinalizeCmd),
+    Research(ResearchCmd),
 }
 
 /// create or replace the current plan from a request
@@ -160,6 +162,61 @@ struct FinalizeCmd {
     onto: String,
 }
 
+/// autonomous research loop — optimize a metric through experiments
+#[derive(FromArgs)]
+#[argh(
+    subcommand,
+    name = "research",
+    example = "Start a new session:\n  {command_name} \"optimize test runtime\" --command \"./bench.sh\" --metric total_us --direction lower",
+    example = "Interactive setup:\n  {command_name} \"optimize test runtime\"",
+    example = "Resume a session:\n  {command_name} --resume"
+)]
+struct ResearchCmd {
+    /// optimization goal
+    #[argh(positional, greedy)]
+    goal: Vec<String>,
+
+    /// benchmark command to run each iteration
+    #[argh(option)]
+    command: Option<String>,
+
+    /// primary metric name (default: duration_s = wall-clock time)
+    #[argh(option)]
+    metric: Option<String>,
+
+    /// optimization direction: lower or higher (default: lower)
+    #[argh(option)]
+    direction: Option<String>,
+
+    /// files the agent may modify (comma-separated)
+    #[argh(option)]
+    scope: Option<String>,
+
+    /// constraints (e.g. "cargo test must pass")
+    #[argh(option)]
+    constraints: Option<String>,
+
+    /// maximum iterations before stopping
+    #[argh(option)]
+    max_iterations: Option<usize>,
+
+    /// checks command to validate correctness after each benchmark
+    #[argh(option)]
+    checks: Option<String>,
+
+    /// resume a previous research session
+    #[argh(switch)]
+    resume: bool,
+
+    /// show current session status
+    #[argh(switch)]
+    status: bool,
+
+    /// clear session files and start fresh
+    #[argh(switch)]
+    clear: bool,
+}
+
 // ── Exit handling ──
 
 type CmdResult = Result<(), CmdError>;
@@ -251,6 +308,7 @@ fn main() {
         SubCommand::Review(cmd) => cmd_review(&runner, cmd),
         SubCommand::Bare(cmd) => cmd_bare(&runner, cmd),
         SubCommand::Finalize(cmd) => cmd_finalize(&runner, cmd),
+        SubCommand::Research(cmd) => cmd_research(&runner, cmd),
     };
 
     match result {
@@ -391,6 +449,51 @@ fn cmd_bare(runner: &Runner, cmd: BareCmd) -> CmdResult {
 
     banner("DONE");
     info("Bare mode complete.");
+    Ok(())
+}
+
+fn cmd_research(runner: &Runner, cmd: ResearchCmd) -> CmdResult {
+    if cmd.clear {
+        research::research_clear()?;
+        return Ok(());
+    }
+    if cmd.status {
+        research::research_status()?;
+        return Ok(());
+    }
+    if cmd.resume {
+        research::research_resume(runner, cmd.max_iterations)?;
+        return Ok(());
+    }
+
+    let goal = cmd.goal.join(" ");
+    let goal = goal.trim().to_string();
+    if goal.is_empty() {
+        return Err(CmdError::Failure(
+            "missing goal; pass optimization goal as argument (e.g. dex research \"optimize test runtime\")".into(),
+        ));
+    }
+
+    let config = if cmd.command.is_some() {
+        research::ResearchConfig::new(
+            goal,
+            cmd.command.unwrap(),
+            cmd.metric.unwrap_or_else(|| "duration_s".to_string()),
+            String::new(),
+            cmd.direction.unwrap_or_else(|| "lower".to_string()),
+            cmd.scope.unwrap_or_else(|| "(all project files)".to_string()),
+            cmd.constraints.unwrap_or_default(),
+            cmd.checks,
+        )
+    } else if std::io::stdin().is_terminal() {
+        research::interactive_setup(&goal)?
+    } else {
+        return Err(CmdError::Failure(
+            "--command is required in non-interactive mode".into(),
+        ));
+    };
+
+    research::research_new(runner, config, cmd.max_iterations)?;
     Ok(())
 }
 

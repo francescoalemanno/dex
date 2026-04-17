@@ -226,6 +226,25 @@ pub fn prompt_choice(msg: &str, choices: &[&str]) -> String {
     }
 }
 
+pub fn prompt_line(msg: &str, hint: &str) -> String {
+    let mut stream = stderr();
+    let mut spec = ColorSpec::new();
+    spec.set_fg(Some(Color::Yellow)).set_bold(true);
+    let _ = stream.set_color(&spec);
+    let _ = write!(stream, "? {}", msg);
+    let _ = stream.reset();
+    if !hint.is_empty() {
+        let _ = write!(stream, " ");
+        write_dim(&mut stream, hint);
+    }
+    let _ = write!(stream, " ");
+    let _ = stream.flush();
+
+    let mut input = String::new();
+    let _ = io::stdin().read_line(&mut input);
+    input.trim().to_string()
+}
+
 /// Write a dim-gray timestamp prefix to stderr. Used by runner.
 pub fn write_timestamp(stream: &mut StandardStream, text: &str) {
     let mut spec = ColorSpec::new();

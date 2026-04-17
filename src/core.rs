@@ -18,6 +18,7 @@ const BUILTIN_TEMPLATES: &[(&str, &str)] = &[
     ("impl.txt", include_str!("../prompts/impl.txt")),
     ("plan.txt", include_str!("../prompts/plan.txt")),
     ("review.txt", include_str!("../prompts/review.txt")),
+    ("research.txt", include_str!("../prompts/research.txt")),
 ];
 
 fn template_engine() -> Handlebars<'static> {
