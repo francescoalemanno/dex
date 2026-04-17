@@ -175,6 +175,56 @@ Each writes findings to `.dex/review-<name>.md`. The review diff base is loaded 
 
 Then a focused review loop runs with only quality and implementation reviewers for up to 3 additional rounds. The phase ends when both report zero issues, or the cap is reached.
 
+### Phase 4: Research (optional)
+
+`dex research` is a standalone autonomous optimization loop. Instead of implementing a plan, it drives the agent to iteratively improve a measurable metric through experiments.
+
+You provide a goal, a benchmark command, and the metric to optimize. dex does the rest:
+
+1. Creates a dedicated `research/<goal>-<date>` git branch and runs the benchmark to establish a **baseline**.
+2. Each iteration, the agent reads the goal, recent history, and a list of dead ends, then makes **one focused change** and commits it.
+3. dex runs the benchmark, parses `METRIC name=value` lines from the output, and optionally runs a checks command (e.g. a test suite).
+4. If the metric improved, the commit is **kept**. If it regressed, the commit is **reverted** automatically.
+5. Dead ends (discards, crashes, check failures) are fed back to the agent so it doesn't retry the same approach.
+6. A MAD-based confidence score tracks whether cumulative improvements are statistically meaningful or within noise.
+
+The loop stops after `--max-iterations` or after 3 consecutive agent failures. The agent also maintains a `research-notes.md` scratchpad that carries hypotheses and learnings across iterations.
+
+**Start a new research session with all options:**
+
+```bash
+dex research "optimize test runtime" \
+    --command "./bench.sh" \
+    --metric total_us \
+    --direction lower \
+    --scope "src/engine.rs, src/cache.rs" \
+    --constraints "cargo test must pass" \
+    --checks "cargo test" \
+    --max-iterations 20
+```
+
+**Interactive setup (prompts for each option):**
+
+```bash
+dex research "reduce binary size"
+```
+
+**Resume a previous session:**
+
+```bash
+dex research --resume
+dex research --resume --max-iterations 10
+```
+
+**Check progress or clear session files:**
+
+```bash
+dex research --status
+dex research --clear
+```
+
+The benchmark command must print metrics as `METRIC name=value` lines to stdout or stderr. If no `--metric` is given, dex uses `duration_s` (wall-clock time of the benchmark command itself).
+
 ## Subcommands
 
 | Subcommand | Description |
@@ -184,6 +234,7 @@ Then a focused review loop runs with only quality and implementation reviewers f
 | `amend <feedback>` | Revise the current plan using natural-language feedback. |
 | `apply` | Implement the current plan. |
 | `review [--parallel <n>]` | Review the current implementation. |
+| `research <goal> [options]` | Autonomous optimization loop — improve a metric through experiments. |
 | `bare <iterations> <request-file>` | Send a request file straight to the agent for N iterations, re-reading the file each round. |
 | `finalize --onto <target>` | Rebase, tidy commits, and rerun checks against the given target. |
 
@@ -232,6 +283,8 @@ You can safely delete the entire `.dex/` directory to start fresh. dex recreates
 dex builds on the **Ralph Wiggum Technique** created by [Geoffrey Huntley](https://ghuntley.com/ralph/) ([@GeoffreyHuntley](https://x.com/GeoffreyHuntley)), which pioneered the autonomous plan -> build -> iterate loop for AI coding agents. The key insight, that a fresh context window per task keeps the model sharp and that a dumb outer loop with file-based state is enough for continuity, is the foundation dex stands on.
 
 Clayton Farr's [playbook](https://github.com/ghuntley/how-to-ralph-wiggum) documented the methodology in depth and proposed enhancements that influenced dex's multi-reviewer design and backpressure philosophy.
+
+The `dex research` loop is inspired by Andrej Karpathy's [autoresearch](https://github.com/karpathy/autoresearch), which demonstrated that an AI agent can autonomously run experiments on a fixed-time-budget training setup overnight: modify code, benchmark, keep or discard, repeat. dex generalizes this to any codebase and any metric, with dead-end tracking, confidence scoring, and support for any coding CLI.
 
 dex's contribution is wrapping that loop in a deterministic orchestrator: programmatic task tracking, human-gated planning, parallel review fanout, automatic retries, and CLI-agnostic execution, so the technique scales to tasks where a bare bash loop starts to feel fragile.
 
