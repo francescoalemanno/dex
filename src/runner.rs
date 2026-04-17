@@ -235,8 +235,8 @@ impl Runner {
             cmd.stdin(Stdio::null());
         }
 
-        let child = SharedChild::spawn(&mut cmd)
-            .map_err(|e| format!("spawn {}: {}", cfg.cmd, e))?;
+        let child =
+            SharedChild::spawn(&mut cmd).map_err(|e| format!("spawn {}: {}", cfg.cmd, e))?;
         let child = Arc::new(child);
 
         track_child(&child);

@@ -6,47 +6,22 @@ mod ui;
 
 use argh::FromArgs;
 use std::fs;
+use std::io::IsTerminal;
 use std::path::Path;
 use std::process::exit;
 use std::time::Duration;
 
 use crate::core::{
-    dex_path, ensure_dex_dir, seed_prompts, git_trimmed_output, load_config, load_feedbacks,
+    dex_path, ensure_dex_dir, git_trimmed_output, load_config, load_feedbacks,
     load_review_base_ref, read_dex_file, reset_dex_runtime_artifacts, save_config,
-    save_review_base_ref, Config,
+    save_plan_request, save_review_base_ref, seed_prompts, Config,
 };
 use crate::phases::{bare_phase, finalize_phase, impl_phase, plan_phase, review_phase};
 use crate::plan::validate_candidate_plan;
 use crate::runner::{kill_all_children, Runner};
-use crate::ui::{app_header, banner, err_msg, info, prompt_choice, prompt_multiline, warn};
+use crate::ui::{app_header, banner, err_msg, info, warn};
 
 const REVISION: &str = env!("CARGO_PKG_VERSION");
-
-const HELP_EXAMPLES_SECTION: &str = concat!(
-    "\nExamples:\n",
-    "  New guided run:\n",
-    "    dex run \"add structured logging to the API and update tests\"\n",
-    "  Plan only (no implementation):\n",
-    "    dex plan \"redesign the caching layer\"\n",
-    "  Run without review:\n",
-    "    dex run --no-review \"quick prototype for the new feature\"\n",
-    "  Resume a saved plan:\n",
-    "    dex resume\n",
-    "  Revise an existing plan:\n",
-    "    dex revise \"use a different database library\"\n",
-    "  Open-ended bare loop:\n",
-    "    dex bare 10 \"explore the repo and improve test coverage\"\n",
-    "  Finalize a feature branch:\n",
-    "    dex finalize --onto main\n",
-    "  Execute an imported plan:\n",
-    "    dex import myplan.md\n",
-    "  Import and revise before execution:\n",
-    "    dex import myplan.md --revise \"adjust the testing approach\"\n",
-    "  Limit parallel reviewers:\n",
-    "    dex --parallel 2 run \"add a new endpoint\"\n",
-    "  Update prompt templates:\n",
-    "    dex --update-prompts run \"my request\"\n",
-);
 
 // ── CLI argument definitions ──
 
@@ -69,10 +44,6 @@ struct Args {
     #[argh(option, default = "1200")]
     timeout: u64,
 
-    /// max reviewers to run in parallel (default: all)
-    #[argh(option)]
-    parallel: Option<usize>,
-
     #[argh(subcommand)]
     command: Option<SubCommand>,
 }
@@ -80,106 +51,120 @@ struct Args {
 #[derive(FromArgs)]
 #[argh(subcommand)]
 enum SubCommand {
-    Run(RunCmd),
     Plan(PlanCmd),
-    Resume(ResumeCmd),
-    Revise(ReviseCmd),
+    Import(ImportCmd),
+    Amend(AmendCmd),
+    Apply(ApplyCmd),
+    Review(ReviewCmd),
     Bare(BareCmd),
     Finalize(FinalizeCmd),
-    Import(ImportCmd),
 }
 
-/// plan, implement, and review a request
+/// create or replace the current plan from a request
 #[derive(FromArgs)]
-#[argh(subcommand, name = "run")]
-struct RunCmd {
-    /// overwrite an existing plan and start fresh
-    #[argh(switch)]
-    force: bool,
-
-    /// skip the review phase
-    #[argh(switch)]
-    no_review: bool,
-
-    /// request text
-    #[argh(positional, greedy)]
-    request: Vec<String>,
-}
-
-/// plan only — stop after the planning phase without implementing
-#[derive(FromArgs)]
-#[argh(subcommand, name = "plan")]
+#[argh(
+    subcommand,
+    name = "plan",
+    example = "Draft a new plan:\n  {command_name} \"redesign the caching layer\"",
+    example = "Overwrite an existing plan:\n  {command_name} --force \"rewrite the auth module\""
+)]
 struct PlanCmd {
     /// overwrite an existing plan and start fresh
     #[argh(switch)]
     force: bool,
 
-    /// request text
+    /// request text or a file path containing the request
     #[argh(positional, greedy)]
     request: Vec<String>,
 }
 
-/// resume an existing plan from where it left off
+/// install a markdown plan file as the current plan
 #[derive(FromArgs)]
-#[argh(subcommand, name = "resume")]
-struct ResumeCmd {
-    /// skip the review phase
+#[argh(
+    subcommand,
+    name = "import",
+    example = "Import a prepared plan:\n  {command_name} myplan.md"
+)]
+struct ImportCmd {
+    /// overwrite an existing plan and start fresh
     #[argh(switch)]
-    no_review: bool,
+    force: bool,
+
+    /// path to the markdown plan file
+    #[argh(positional)]
+    file: String,
 }
 
-/// revise an existing plan with new feedback, then continue
+/// revise the current plan using feedback
 #[derive(FromArgs)]
-#[argh(subcommand, name = "revise")]
-struct ReviseCmd {
-    /// revision feedback
+#[argh(
+    subcommand,
+    name = "amend",
+    example = "Amend the current plan:\n  {command_name} \"split database and HTTP work into separate tasks\""
+)]
+struct AmendCmd {
+    /// amendment feedback or a file path containing the feedback
     #[argh(positional, greedy)]
     feedback: Vec<String>,
 }
 
+/// implement the current plan
+#[derive(FromArgs)]
+#[argh(
+    subcommand,
+    name = "apply",
+    example = "Apply the current plan:\n  {command_name}"
+)]
+struct ApplyCmd {}
+
+/// review the current implementation
+#[derive(FromArgs)]
+#[argh(
+    subcommand,
+    name = "review",
+    example = "Review the current implementation:\n  {command_name} --parallel 2"
+)]
+struct ReviewCmd {
+    /// max reviewers to run in parallel (default: all)
+    #[argh(option)]
+    parallel: Option<usize>,
+}
+
 /// send a request straight to the agent for N iterations
 #[derive(FromArgs)]
-#[argh(subcommand, name = "bare")]
+#[argh(
+    subcommand,
+    name = "bare",
+    example = "Open-ended bare loop:\n  {command_name} 10 bare-request.txt"
+)]
 struct BareCmd {
     /// number of iterations
     #[argh(positional)]
     iterations: usize,
 
-    /// request text
-    #[argh(positional, greedy)]
-    request: Vec<String>,
+    /// request file; it is re-read on every iteration
+    #[argh(positional)]
+    request_file: String,
 }
 
 /// finalize a feature branch against a rebase target
 #[derive(FromArgs)]
-#[argh(subcommand, name = "finalize")]
+#[argh(
+    subcommand,
+    name = "finalize",
+    example = "Finalize a feature branch:\n  {command_name} --onto main"
+)]
 struct FinalizeCmd {
     /// rebase target (e.g. main, origin/main)
     #[argh(option)]
     onto: String,
 }
 
-/// import a markdown plan and execute it
-#[derive(FromArgs)]
-#[argh(subcommand, name = "import")]
-struct ImportCmd {
-    /// path to the markdown plan file
-    #[argh(positional)]
-    file: String,
-
-    /// optional revision feedback; revise the imported plan before execution
-    #[argh(option)]
-    revise: Option<String>,
-
-    /// skip the review phase
-    #[argh(switch)]
-    no_review: bool,
-}
-
 // ── Exit handling ──
 
 type CmdResult = Result<(), CmdError>;
 
+#[derive(Debug)]
 enum CmdError {
     Failure(String),
     Cancelled,
@@ -210,7 +195,8 @@ fn main() {
     })
     .ok();
 
-    let args = parse_args();
+    let parsed = parse_args();
+    let args = parsed.args;
 
     if args.version {
         println!("dex {}", REVISION);
@@ -227,7 +213,7 @@ fn main() {
     let command = match args.command {
         Some(cmd) => cmd,
         None => {
-            print_help();
+            print_help(&parsed.command_name);
             return;
         }
     };
@@ -257,16 +243,14 @@ fn main() {
         cli: cli_name.clone(),
     });
 
-    let parallel = args.parallel;
-
     let result = match command {
-        SubCommand::Run(cmd) => cmd_run(&runner, cmd, parallel),
         SubCommand::Plan(cmd) => cmd_plan(&runner, cmd),
-        SubCommand::Resume(cmd) => cmd_resume(&runner, cmd, parallel),
-        SubCommand::Revise(cmd) => cmd_revise(&runner, cmd, parallel),
+        SubCommand::Import(cmd) => cmd_import(cmd),
+        SubCommand::Amend(cmd) => cmd_amend(&runner, cmd),
+        SubCommand::Apply(cmd) => cmd_apply(&runner, cmd),
+        SubCommand::Review(cmd) => cmd_review(&runner, cmd),
         SubCommand::Bare(cmd) => cmd_bare(&runner, cmd),
         SubCommand::Finalize(cmd) => cmd_finalize(&runner, cmd),
-        SubCommand::Import(cmd) => cmd_import(&runner, cmd, parallel),
     };
 
     match result {
@@ -281,148 +265,129 @@ fn main() {
 
 // ── Subcommand handlers ──
 
-fn cmd_run(runner: &Runner, cmd: RunCmd, parallel: Option<usize>) -> CmdResult {
-    let plan_path = dex_path("plan.md");
-
-    if Path::new(&plan_path).exists() && !cmd.force {
-        return Err(CmdError::Failure(
-            "A plan already exists. Use `dex resume`, `dex revise`, or `dex run --force`.".into(),
-        ));
-    }
-
-    if cmd.force && Path::new(&plan_path).exists() {
-        info("Clearing existing artifacts (plan, progress, feedbacks, reviews).");
-        reset_dex_runtime_artifacts();
-    }
-
-    preflight_git()?;
-
-    let mut request = cmd.request.join(" ");
-    if request.trim().is_empty() {
-        request = prompt_multiline("Enter your request:");
-        if request.trim().is_empty() {
-            return Err(CmdError::Cancelled);
-        }
-    }
-
-    match plan_phase(runner, &request, Vec::new())? {
-        Some(_) => snapshot_review_base_ref(),
-        None => return Err(CmdError::Cancelled),
-    }
-
-    impl_phase(runner, &plan_path)?;
-    if !cmd.no_review {
-        run_review(runner, &plan_path, parallel)?;
-    }
-
-    banner("DONE");
-    info("All phases complete.");
-    Ok(())
-}
-
 fn cmd_plan(runner: &Runner, cmd: PlanCmd) -> CmdResult {
-    let plan_path = dex_path("plan.md");
+    ensure_interactive_stdin("plan")?;
 
-    if Path::new(&plan_path).exists() && !cmd.force {
+    let plan_path = dex_path("plan.md");
+    let plan_exists = Path::new(&plan_path).exists();
+    if plan_exists && !cmd.force {
         return Err(CmdError::Failure(
-            "A plan already exists. Use `dex plan --force` to overwrite.".into(),
+            "A plan already exists. Use `dex plan --force` to overwrite it.".into(),
         ));
     }
-
-    if cmd.force && Path::new(&plan_path).exists() {
+    if plan_exists && cmd.force {
         info("Clearing existing artifacts (plan, progress, feedbacks, reviews).");
         reset_dex_runtime_artifacts();
     }
 
-    preflight_git()?;
-
-    let mut request = cmd.request.join(" ");
-    if request.trim().is_empty() {
-        request = prompt_multiline("Enter your request:");
-        if request.trim().is_empty() {
-            return Err(CmdError::Cancelled);
-        }
-    }
-
+    let request = read_text_or_file(cmd.request, "request")?;
     match plan_phase(runner, &request, Vec::new())? {
-        Some(_) => snapshot_review_base_ref(),
-        None => return Err(CmdError::Cancelled),
-    }
-
-    banner("DONE");
-    info("Plan saved. Use `dex resume` to implement and review.");
-    Ok(())
-}
-
-fn cmd_resume(runner: &Runner, cmd: ResumeCmd, parallel: Option<usize>) -> CmdResult {
-    let plan_path = dex_path("plan.md");
-
-    if !Path::new(&plan_path).exists() {
-        return Err(CmdError::Failure(
-            "No plan exists. Use `dex run` to start a new workflow.".into(),
-        ));
-    }
-
-    preflight_git()?;
-
-    info(&format!("Resuming existing plan at {}", plan_path));
-
-    impl_phase(runner, &plan_path)?;
-    if !cmd.no_review {
-        run_review(runner, &plan_path, parallel)?;
-    }
-
-    banner("DONE");
-    info("All phases complete.");
-    Ok(())
-}
-
-fn cmd_revise(runner: &Runner, cmd: ReviseCmd, parallel: Option<usize>) -> CmdResult {
-    let plan_path = dex_path("plan.md");
-
-    if !Path::new(&plan_path).exists() {
-        return Err(CmdError::Failure(
-            "No plan exists to revise. Use `dex run` to start a new workflow.".into(),
-        ));
-    }
-
-    preflight_git()?;
-
-    let mut feedback = cmd.feedback.join(" ");
-    if feedback.trim().is_empty() {
-        feedback = prompt_multiline("Enter your revision feedback:");
-        if feedback.trim().is_empty() {
-            return Err(CmdError::Cancelled);
+        Some(_) => {
+            snapshot_review_base_ref();
+            banner("DONE");
+            info("Plan saved.");
+            Ok(())
         }
+        None => Err(CmdError::Cancelled),
+    }
+}
+
+fn cmd_import(cmd: ImportCmd) -> CmdResult {
+    let plan_path = dex_path("plan.md");
+    let plan_exists = Path::new(&plan_path).exists();
+    if plan_exists && !cmd.force {
+        return Err(CmdError::Failure(
+            "A plan already exists. Use `dex import --force` to overwrite it.".into(),
+        ));
+    }
+    if plan_exists && cmd.force {
+        info("Clearing existing artifacts (plan, progress, feedbacks, reviews).");
     }
 
-    let request = read_dex_file("request.txt").unwrap_or_else(|| feedback.clone());
+    validate_candidate_plan(&cmd.file)?;
+    let imported_plan = fs::read_to_string(&cmd.file)
+        .map_err(|e| format!("read imported plan {:?}: {}", cmd.file, e))?;
+
+    ensure_dex_dir();
+    reset_dex_runtime_artifacts();
+    fs::write(&plan_path, &imported_plan)
+        .map_err(|e| format!("write imported plan to {}: {}", plan_path, e))?;
+    save_plan_request(&format!("Imported plan from {}", cmd.file));
+    snapshot_review_base_ref();
+
+    banner("DONE");
+    info(&format!("Plan imported from {}.", cmd.file));
+    Ok(())
+}
+
+fn cmd_amend(runner: &Runner, cmd: AmendCmd) -> CmdResult {
+    ensure_interactive_stdin("amend")?;
+
+    let plan_path = dex_path("plan.md");
+    if !Path::new(&plan_path).exists() {
+        return Err(CmdError::Failure(
+            "No plan exists. Use `dex plan` or `dex import` first.".into(),
+        ));
+    }
+
+    let feedback = read_text_or_file(cmd.feedback, "feedback")?;
+    let request = read_dex_file("request.txt").unwrap_or_else(|| "Amend the current plan.".into());
     let mut feedbacks = load_feedbacks();
     feedbacks.push(feedback);
 
     match plan_phase(runner, &request, feedbacks)? {
-        Some(_) => snapshot_review_base_ref(),
-        None => return Err(CmdError::Cancelled),
+        Some(_) => {
+            snapshot_review_base_ref();
+            banner("DONE");
+            info("Plan updated.");
+            Ok(())
+        }
+        None => Err(CmdError::Cancelled),
+    }
+}
+
+fn cmd_apply(runner: &Runner, _cmd: ApplyCmd) -> CmdResult {
+    let plan_path = dex_path("plan.md");
+    if !Path::new(&plan_path).exists() {
+        return Err(CmdError::Failure(
+            "No plan exists. Use `dex plan` or `dex import` first.".into(),
+        ));
     }
 
     impl_phase(runner, &plan_path)?;
-    run_review(runner, &plan_path, parallel)?;
+    banner("DONE");
+    info("Implementation complete.");
+    Ok(())
+}
+
+fn cmd_review(runner: &Runner, cmd: ReviewCmd) -> CmdResult {
+    let plan_path = dex_path("plan.md");
+    if !Path::new(&plan_path).exists() {
+        return Err(CmdError::Failure(
+            "No plan exists. Use `dex plan` or `dex import` first.".into(),
+        ));
+    }
+
+    let review_ctx = load_review_context();
+    if !review_ctx.git_available {
+        warn("Review base ref is unavailable; review will run without git diff context.");
+    }
+
+    review_phase(
+        runner,
+        &plan_path,
+        review_ctx.base_ref.as_deref(),
+        review_ctx.git_available,
+        cmd.parallel,
+    )?;
 
     banner("DONE");
-    info("All phases complete.");
+    info("Review complete.");
     Ok(())
 }
 
 fn cmd_bare(runner: &Runner, cmd: BareCmd) -> CmdResult {
-    let mut request = cmd.request.join(" ");
-    if request.trim().is_empty() {
-        request = prompt_multiline("Enter your request:");
-        if request.trim().is_empty() {
-            return Err(CmdError::Cancelled);
-        }
-    }
-
-    bare_phase(runner, &request, cmd.iterations)?;
+    bare_phase(runner, &cmd.request_file, cmd.iterations)?;
 
     banner("DONE");
     info("Bare mode complete.");
@@ -431,7 +396,6 @@ fn cmd_bare(runner: &Runner, cmd: BareCmd) -> CmdResult {
 
 fn cmd_finalize(runner: &Runner, cmd: FinalizeCmd) -> CmdResult {
     let plan_path = dex_path("plan.md");
-
     finalize_phase(runner, &plan_path, &cmd.onto)?;
 
     banner("DONE");
@@ -439,82 +403,47 @@ fn cmd_finalize(runner: &Runner, cmd: FinalizeCmd) -> CmdResult {
     Ok(())
 }
 
-fn cmd_import(runner: &Runner, cmd: ImportCmd, parallel: Option<usize>) -> CmdResult {
-    let plan_path = dex_path("plan.md");
-
-    validate_candidate_plan(&cmd.file)?;
-    let imported_plan = fs::read_to_string(&cmd.file)
-        .map_err(|e| format!("read imported plan {:?}: {}", cmd.file, e))?;
-
-    if Path::new(&plan_path).exists() {
-        let choice = prompt_choice(
-            "A plan already exists. Replace it or quit?",
-            &["replace", "quit"],
-        );
-        if choice == "quit" {
-            return Err(CmdError::Cancelled);
-        }
-    }
-
-    ensure_dex_dir();
-    reset_dex_runtime_artifacts();
-    fs::write(&plan_path, &imported_plan)
-        .map_err(|e| format!("write imported plan to {}: {}", plan_path, e))?;
-
-    preflight_git()?;
-    snapshot_review_base_ref();
-
-    if let Some(revision) = cmd.revise {
-        info("Imported plan will be revised before execution.");
-        match plan_phase(runner, &revision, Vec::new())? {
-            Some(_) => snapshot_review_base_ref(),
-            None => return Err(CmdError::Cancelled),
-        }
-    } else {
-        info(&format!("Starting from imported plan at {}", cmd.file));
-    }
-
-    impl_phase(runner, &plan_path)?;
-    if !cmd.no_review {
-        run_review(runner, &plan_path, parallel)?;
-    }
-
-    banner("DONE");
-    info("All phases complete.");
-    Ok(())
-}
-
-// ── Shared helpers ──
-
-fn preflight_git() -> CmdResult {
-    if git_trimmed_output(&["rev-parse", "--is-inside-work-tree"]).is_ok() {
+fn ensure_interactive_stdin(command: &str) -> CmdResult {
+    if std::io::stdin().is_terminal() {
         return Ok(());
     }
-    warn("Not inside a git repository. Review will run without diff context.");
-    let choice = prompt_choice("Continue anyway?", &["yes", "no"]);
-    if choice == "no" {
-        return Err(CmdError::Cancelled);
-    }
-    Ok(())
+
+    Err(CmdError::Failure(format!(
+        "`dex {}` requires an interactive stdin; pass the {} as an argument or a file path instead.",
+        command,
+        if command == "amend" {
+            "feedback"
+        } else {
+            "request"
+        }
+    )))
 }
 
-fn run_review(
-    runner: &Runner,
-    plan_path: &str,
-    parallel: Option<usize>,
-) -> Result<(), String> {
-    let review_ctx = load_review_context();
-    if !review_ctx.git_available {
-        warn("Review base ref is unavailable; review will run without git diff context.");
+fn read_text_or_file(words: Vec<String>, kind: &str) -> Result<String, CmdError> {
+    let raw = words.join(" ");
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err(CmdError::Failure(format!(
+            "missing {}; pass {} text or a file path containing it.",
+            kind, kind
+        )));
     }
 
-    review_phase(
-        runner,
-        plan_path,
-        review_ctx.base_ref.as_deref(),
-        review_ctx.git_available,
-        parallel,
-    )
+    let text = if Path::new(raw).is_file() {
+        fs::read_to_string(raw).map_err(|e| format!("read {} file {:?}: {}", kind, raw, e))?
+    } else {
+        raw.to_string()
+    };
+
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return Err(CmdError::Failure(format!(
+            "{} is empty after trimming.",
+            kind
+        )));
+    }
+
+    Ok(text)
 }
 
 fn resolve_cli(explicit: Option<String>) -> String {
@@ -569,7 +498,12 @@ fn resolve_current_head_for_review() -> Option<String> {
 
 // ── Arg parsing & help ──
 
-fn parse_args() -> Args {
+struct ParsedArgs {
+    args: Args,
+    command_name: String,
+}
+
+fn parse_args() -> ParsedArgs {
     let strings: Vec<String> = std::env::args_os()
         .map(|s| s.into_string())
         .collect::<Result<Vec<_>, _>>()
@@ -583,10 +517,10 @@ fn parse_args() -> Args {
         exit(1);
     }
 
-    let command_name = base_command_name(&strings[0]);
+    let command_name = base_command_name(&strings[0]).to_string();
     let args: Vec<&str> = strings.iter().map(String::as_str).collect();
 
-    Args::from_args(&[command_name], &args[1..]).unwrap_or_else(|early_exit| {
+    let parsed = Args::from_args(&[&command_name], &args[1..]).unwrap_or_else(|early_exit| {
         exit(match early_exit.status {
             Ok(()) => {
                 print!(
@@ -606,15 +540,30 @@ fn parse_args() -> Args {
                 1
             }
         })
-    })
+    });
+
+    ParsedArgs {
+        args: parsed,
+        command_name,
+    }
 }
 
-fn print_help() {
-    let help = format!("dex {}\n\nRun `dex --help` for usage.", REVISION);
+fn print_help(command_name: &str) {
+    let help = top_level_help_output(command_name);
     print!(
         "{}",
         render_help_output_with(&help, &crate::runner::dex_available_agents(),)
     );
+}
+
+fn top_level_help_output(command_name: &str) -> String {
+    match Args::from_args(&[command_name], &["--help"]) {
+        Err(early_exit) => {
+            debug_assert!(early_exit.status.is_ok());
+            early_exit.output
+        }
+        Ok(_) => unreachable!("--help should trigger an early exit"),
+    }
 }
 
 fn base_command_name(path: &str) -> &str {
@@ -625,12 +574,8 @@ fn base_command_name(path: &str) -> &str {
 }
 
 fn render_help_output_with(base_help: &str, available: &[&str]) -> String {
-    let mut output = String::with_capacity(base_help.len() + HELP_EXAMPLES_SECTION.len());
+    let mut output = String::with_capacity(base_help.len() + 64);
     output.push_str(base_help);
-    if !output.ends_with('\n') {
-        output.push('\n');
-    }
-    output.push_str(HELP_EXAMPLES_SECTION);
 
     if !output.ends_with('\n') {
         output.push('\n');
@@ -657,8 +602,24 @@ fn available_agents_help_section_with(available: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        available_agents_help_section_with, render_help_output_with, HELP_EXAMPLES_SECTION,
+        available_agents_help_section_with, read_text_or_file, render_help_output_with,
+        top_level_help_output, CmdError,
     };
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn write_temp_file(contents: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "dex-main-test-{}-{}.txt",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        fs::write(&path, contents).unwrap();
+        path
+    }
 
     #[test]
     fn help_section_lists_available_agents() {
@@ -672,21 +633,70 @@ mod tests {
     fn help_output_appends_available_agents_section() {
         assert_eq!(
             render_help_output_with("Usage: dex", &[]),
-            format!(
-                "Usage: dex\n{}\nAvailable agents:\n  none found in PATH\n",
-                HELP_EXAMPLES_SECTION
-            )
+            "Usage: dex\n\nAvailable agents:\n  none found in PATH\n"
         );
     }
 
     #[test]
-    fn help_output_appends_examples_after_options() {
+    fn help_output_appends_available_agents_after_options() {
         assert_eq!(
             render_help_output_with("Usage: dex\n\nOptions:\n  --help\n", &[]),
-            format!(
-                "Usage: dex\n\nOptions:\n  --help\n{}\nAvailable agents:\n  none found in PATH\n",
-                HELP_EXAMPLES_SECTION
-            )
+            "Usage: dex\n\nOptions:\n  --help\n\nAvailable agents:\n  none found in PATH\n"
         );
+    }
+
+    #[test]
+    fn top_level_help_output_matches_real_help() {
+        let help = top_level_help_output("dex");
+
+        assert!(
+            help.starts_with(
+                "Usage: dex [--version] [--update-prompts] [--cli <name>] [--timeout <timeout>] [<command>] [<args>]"
+            ),
+            "unexpected help output: {help}"
+        );
+        assert!(help.contains("\nCommands:\n  plan"));
+        assert!(!help.contains("Run `dex --help`"));
+        assert!(!help.contains("\nExamples:\n"));
+    }
+
+    #[test]
+    fn read_text_or_file_uses_trimmed_inline_text() {
+        assert_eq!(
+            read_text_or_file(vec!["  hello world  ".into()], "request").unwrap(),
+            "hello world"
+        );
+    }
+
+    #[test]
+    fn read_text_or_file_loads_and_trims_file_contents() {
+        let path = write_temp_file("  file request  \n");
+        let value = read_text_or_file(vec![path.to_string_lossy().into_owned()], "request");
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(value.unwrap(), "file request");
+    }
+
+    #[test]
+    fn read_text_or_file_rejects_missing_input() {
+        match read_text_or_file(Vec::new(), "feedback") {
+            Err(CmdError::Failure(msg)) => assert_eq!(
+                msg,
+                "missing feedback; pass feedback text or a file path containing it."
+            ),
+            _ => panic!("expected failure"),
+        }
+    }
+
+    #[test]
+    fn read_text_or_file_rejects_empty_trimmed_file_contents() {
+        let path = write_temp_file(" \n\t ");
+        let value = read_text_or_file(vec![path.to_string_lossy().into_owned()], "request");
+        let _ = fs::remove_file(&path);
+
+        match value {
+            Err(CmdError::Failure(msg)) => assert_eq!(msg, "request is empty after trimming."),
+            _ => panic!("expected failure"),
+        }
     }
 }

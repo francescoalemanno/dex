@@ -10,8 +10,8 @@ use crate::core::{
 use crate::plan::{all_tasks_done, next_open_task};
 use crate::runner::Runner;
 use crate::ui::{
-    banner, err_msg, info, phase_detail, prompt_choice, prompt_multiline, show_block, show_markdown,
-    warn,
+    banner, err_msg, info, phase_detail, prompt_choice, prompt_multiline, show_block,
+    show_markdown, warn,
 };
 
 // ── Phase 1: Planning ──
@@ -535,7 +535,22 @@ fn is_clean_review(review: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_clean_review, Reviewers};
+    use super::{is_clean_review, read_bare_request_file, Reviewers};
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn write_temp_file(contents: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "dex-phases-test-{}-{}.txt",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        fs::write(&path, contents).unwrap();
+        path
+    }
 
     #[test]
     fn focused_reviewer_names_do_not_overlap_with_broad_reviewers() {
@@ -566,14 +581,69 @@ mod tests {
         assert!(!is_clean_review("Some problems detected"));
         assert!(!is_clean_review(""));
     }
+
+    #[test]
+    fn bare_request_file_is_trimmed() {
+        let path = write_temp_file("  hello from file  \n");
+        let request = read_bare_request_file(path.to_str().unwrap());
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(request.unwrap(), Some("hello from file".to_string()));
+    }
+
+    #[test]
+    fn bare_request_file_stops_on_empty_trimmed_content() {
+        let path = write_temp_file(" \n\t ");
+        let request = read_bare_request_file(path.to_str().unwrap());
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(request.unwrap(), None);
+    }
+
+    #[test]
+    fn bare_request_file_stops_on_missing_file() {
+        let path = std::env::temp_dir().join(format!(
+            "dex-phases-missing-{}-{}.txt",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+
+        assert_eq!(
+            read_bare_request_file(path.to_str().unwrap()).unwrap(),
+            None
+        );
+    }
 }
 
 // ── Bare Mode ──
 
-pub fn bare_phase(r: &Runner, request: &str, max_iterations: usize) -> Result<(), String> {
+fn read_bare_request_file(path: &str) -> Result<Option<String>, String> {
+    let request = match fs::read_to_string(path) {
+        Ok(request) => request,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("read bare request {:?}: {}", path, e)),
+    };
+    let request = request.trim().to_string();
+    if request.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(request))
+}
+
+pub fn bare_phase(r: &Runner, request_file: &str, max_iterations: usize) -> Result<(), String> {
     banner("BARE");
     for iteration in 1..=max_iterations {
         phase_detail("iteration", &format!("{}/{}", iteration, max_iterations));
+        let request = match read_bare_request_file(request_file)? {
+            Some(request) => request,
+            None => {
+                info("Bare loop stopped due to missing request.");
+                return Ok(());
+            }
+        };
         let p = render_prompt("bare.txt", &serde_json::json!({"Request": request}));
         if let Err(e) = r.run(&p) {
             return Err(format!("bare iteration {} failed: {}", iteration, e));
@@ -641,5 +711,3 @@ fn commit_count_ahead(finalize_target: &str) -> Result<u64, String> {
         .parse::<u64>()
         .map_err(|e| format!("parse git rev-list count {:?}: {}", count, e))
 }
-
-

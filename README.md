@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![GitHub](https://img.shields.io/github/stars/francescoalemanno/dex?style=social)](https://github.com/francescoalemanno/dex)
 
-**A structured orchestrator for AI coding agents.** Give it a request, and dex plans, implements, and reviews the work automatically using your preferred coding CLI.
+**A structured orchestrator for AI coding agents.** Give it a request, and dex turns it into a plan you can amend, apply, and review using your preferred coding CLI.
 
 You describe what you want. dex turns it into a plan you approve, executes it one task at a time with fresh context each round, then runs parallel code reviews and fixes what the reviewers catch. You stay in control without doing the grunt work.
 
@@ -54,68 +54,76 @@ cargo build --release
 
 You need at least one supported coding CLI installed (`opencode`, `claude`, `codex`, `gemini`, `droid`, `pi`, or `raijin`). You only need Rust if you're building dex from source.
 
-Then just run it:
+Then start with a plan:
 
 ```bash
-dex run "refactor the database layer to use connection pooling instead of per-request connections"
+dex plan "refactor the database layer to use connection pooling instead of per-request connections"
+dex apply
+dex review
 ```
 
-dex will explore your codebase, draft a plan, and ask you to approve it before writing a single line of code.
+dex will explore your codebase, draft a plan, and ask you to approve it before writing a single line of code. Once the plan is locked, `dex apply` implements it and `dex review` runs the reviewer loop.
 
 ## Real-world examples
 
 **Migrate an API from REST to gRPC:**
 
 ```bash
-dex run "convert the user-facing REST API in server/api/ to gRPC, \
+dex plan "convert the user-facing REST API in server/api/ to gRPC, \
      generate proto definitions from the existing route signatures, \
      keep the HTTP gateway for backwards compatibility"
+dex apply
+dex review
 ```
 
 **Add observability to an existing service:**
 
 ```bash
-dex run "instrument all database queries and HTTP handlers in cmd/server \
+dex plan "instrument all database queries and HTTP handlers in cmd/server \
      with OpenTelemetry tracing, add a /metrics endpoint exposing \
      request latency histograms and error rates in Prometheus format"
+dex apply
+dex review
 ```
 
 **Use Claude instead of the default agent:**
 
 ```bash
-dex --cli claude run "add structured JSON logging to the worker package, \
+dex --cli claude plan "add structured JSON logging to the worker package, \
      replace all fmt.Printf calls with slog"
 ```
 
-**Resume from the dex state directory after a crash or interruption:**
+**Amend an existing plan with new feedback:**
 
 ```bash
-dex resume
+dex amend "use a different database library"
 ```
 
-**Revise an existing plan with new feedback:**
+**Apply the current plan after approving it:**
 
 ```bash
-dex revise "use a different database library"
+dex apply
 ```
 
-**Import a prepared plan and execute it:**
+**Review the current implementation with two reviewers at a time:**
+
+```bash
+dex review --parallel 2
+```
+
+**Import a prepared plan:**
 
 ```bash
 dex import myplan.md
 ```
 
-**Import a plan draft and revise it before execution:**
-
-```bash
-dex import myplan.md --revise "adjust the testing approach"
-```
-
 **Raw agent loop for open-ended work (10 iterations):**
 
 ```bash
-dex bare 10 "explore the codebase and improve test coverage \
-     for any file under 60% branch coverage"
+cat > bare-request.txt <<'EOF'
+explore the codebase and improve test coverage for any file under 60% branch coverage
+EOF
+dex bare 10 bare-request.txt
 ```
 
 **Finalize a feature branch for merge:**
@@ -127,16 +135,16 @@ dex finalize --onto main
 **Force overwrite an existing plan:**
 
 ```bash
-dex run --force "rewrite the auth module from scratch"
+dex plan --force "rewrite the auth module from scratch"
 ```
 
 ## How it works
 
-dex runs your request through three phases. Each phase invokes the coding CLI as a subprocess; dex itself never edits your source files directly.
+dex organizes work into three phases. Each phase invokes the coding CLI as a subprocess; dex itself never edits your source files directly.
 
 ### Phase 1: Planning
 
-The agent explores your codebase and drafts a structured markdown plan with checkbox tasks. If it needs clarification, it writes questions to `.dex/questions.md` and dex shows them to you inline.
+`dex plan` explores your codebase and drafts a structured markdown plan with checkbox tasks. If it needs clarification, it writes questions to `.dex/questions.md` and dex shows them to you inline.
 
 You review the plan and choose one of four options:
 
@@ -145,17 +153,17 @@ You review the plan and choose one of four options:
 - **edit**: open the plan in `$EDITOR`; dex computes a unified diff and feeds it back as feedback
 - **reject**: throw it away and touch no code
 
-This loop repeats until you're satisfied. The agent never touches code during planning.
+This loop repeats until you're satisfied. The agent never touches code during planning. `dex amend` re-enters the same planning loop later using the existing plan plus your new feedback.
 
 ### Phase 2: Implementation
 
-dex parses the plan's checkboxes into task groups. Each iteration, it picks the first incomplete group, hands it to the agent with the plan as context, and lets the agent implement, test, and commit. Then the CLI process exits, context is cleared, and the next iteration starts fresh.
+`dex apply` parses the plan's checkboxes into task groups. Each iteration, it picks the first incomplete group, hands it to the agent with the plan as context, and lets the agent implement, test, and commit. Then the CLI process exits, context is cleared, and the next iteration starts fresh.
 
 This is the Ralph insight at work: one task per context window keeps the agent in its smart zone. dex just makes the task selection deterministic instead of leaving it to the model.
 
 ### Phase 3: Review
 
-Five specialized reviewers run concurrently, each in its own agent process:
+`dex review` runs five specialized reviewers concurrently, each in its own agent process:
 
 - **Quality**: bugs, security, correctness, concurrency issues
 - **Implementation**: requirement coverage, wiring, completeness
@@ -171,12 +179,13 @@ Then a focused review loop runs with only quality and implementation reviewers f
 
 | Subcommand | Description |
 |------------|-------------|
-| `run <request>` | Plan, implement, and review a request. Use `--force` to overwrite an existing plan. |
-| `resume` | Resume an existing plan from where it left off. |
-| `revise <feedback>` | Revise an existing plan with new feedback, then continue. |
-| `bare <iterations> <request>` | Send a request straight to the agent for N iterations. |
+| `plan [--force] <request>` | Create or replace the current plan from a request. |
+| `import [--force] <file>` | Install a markdown plan file as the current plan. |
+| `amend <feedback>` | Revise the current plan using natural-language feedback. |
+| `apply` | Implement the current plan. |
+| `review [--parallel <n>]` | Review the current implementation. |
+| `bare <iterations> <request-file>` | Send a request file straight to the agent for N iterations, re-reading the file each round. |
 | `finalize --onto <target>` | Rebase, tidy commits, and rerun checks against the given target. |
-| `import <file> [--revise <feedback>]` | Import a markdown plan and execute it; optionally revise it first. |
 
 ## Global options
 
@@ -210,7 +219,7 @@ dex stores all working state in a `.dex/` directory at your project root. It's g
 |------|---------|------------|
 | `config.json` | Persisted CLI preference across runs | dex |
 | `plan.md` | The current plan with checkbox tasks | agent |
-| `request.txt` | Original user request for revisions | dex |
+| `request.txt` | Original request or imported-plan label used for later amendments | dex |
 | `questions.md` | Clarifying questions from the agent | agent |
 | `feedbacks.json` | Accumulated revision feedback | dex |
 | `review-base-ref.txt` | Durable review diff base captured before implementation | dex |

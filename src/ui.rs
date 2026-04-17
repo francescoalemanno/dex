@@ -19,7 +19,7 @@ const REVISION: &str = env!("CARGO_PKG_VERSION");
 /// Print the application header box in cyan with Unicode box-drawing characters.
 pub fn app_header() {
     let mut stream = stderr();
-    let line1 = "DEX v".to_owned()+REVISION;
+    let line1 = "DEX v".to_owned() + REVISION;
     let line2 = "Agentic Orchestrator";
     let width = line2.len() + 4; // padding
     let _ = writeln!(stream);
@@ -88,13 +88,23 @@ pub fn phase_detail(key: &str, value: &str) {
 
 /// Print a success message: ✓ msg in green+bold.
 pub fn info(msg: &str) {
-    write_styled(Some(Color::Green), true, false, &format!("\u{2713} {}", msg));
+    write_styled(
+        Some(Color::Green),
+        true,
+        false,
+        &format!("\u{2713} {}", msg),
+    );
     let _ = writeln!(stderr());
 }
 
 /// Print a warning: ▸ msg in yellow+bold.
 pub fn warn(msg: &str) {
-    write_styled(Some(Color::Yellow), true, false, &format!("\u{25b8} {}", msg));
+    write_styled(
+        Some(Color::Yellow),
+        true,
+        false,
+        &format!("\u{25b8} {}", msg),
+    );
     let _ = writeln!(stderr());
 }
 
@@ -115,10 +125,16 @@ pub fn write_dim(stream: &mut StandardStream, text: &str) {
 pub fn show_block(title: &str, content: &str) {
     let mut stream = stderr();
     let _ = writeln!(stream);
-    write_dim(&mut stream, &format!("\u{2500}\u{2500} {} \u{2500}\u{2500}", title));
+    write_dim(
+        &mut stream,
+        &format!("\u{2500}\u{2500} {} \u{2500}\u{2500}", title),
+    );
     let _ = writeln!(stream);
     let _ = writeln!(stream, "{}", content);
-    write_dim(&mut stream, &format!("\u{2500}\u{2500} end \u{2500}\u{2500}"));
+    write_dim(
+        &mut stream,
+        &format!("\u{2500}\u{2500} end \u{2500}\u{2500}"),
+    );
     let _ = writeln!(stream);
     let _ = writeln!(stream);
 }
@@ -126,12 +142,18 @@ pub fn show_block(title: &str, content: &str) {
 pub fn show_markdown(title: &str, md: &str) {
     let mut stream = stderr();
     let _ = writeln!(stream);
-    write_dim(&mut stream, &format!("\u{2500}\u{2500} {} \u{2500}\u{2500}", title));
+    write_dim(
+        &mut stream,
+        &format!("\u{2500}\u{2500} {} \u{2500}\u{2500}", title),
+    );
     let _ = writeln!(stream);
     let skin = MadSkin::default();
     let rendered = skin.term_text(md);
     let _ = write!(stream, "{}", rendered);
-    write_dim(&mut stream, &format!("\u{2500}\u{2500} end \u{2500}\u{2500}"));
+    write_dim(
+        &mut stream,
+        &format!("\u{2500}\u{2500} end \u{2500}\u{2500}"),
+    );
     let _ = writeln!(stream);
     let _ = writeln!(stream);
 }
