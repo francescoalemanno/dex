@@ -11,9 +11,9 @@ use std::process::exit;
 use std::time::Duration;
 
 use crate::core::{
-    dex_path, ensure_dex_dir, force_seed_prompts, git_trimmed_output, load_config, load_feedbacks,
+    dex_path, ensure_dex_dir, seed_prompts, git_trimmed_output, load_config, load_feedbacks,
     load_review_base_ref, read_dex_file, reset_dex_runtime_artifacts, save_config,
-    save_review_base_ref, seed_prompts, Config,
+    save_review_base_ref, Config,
 };
 use crate::phases::{bare_phase, finalize_phase, impl_phase, plan_phase, review_phase};
 use crate::plan::validate_candidate_plan;
@@ -234,10 +234,10 @@ fn main() {
 
     ensure_dex_dir();
     if args.update_prompts {
-        force_seed_prompts();
+        seed_prompts(true);
         info("Prompt templates updated to built-in defaults.");
     } else {
-        seed_prompts();
+        seed_prompts(false);
     }
 
     let cli_name = resolve_cli(args.cli);

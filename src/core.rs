@@ -71,31 +71,18 @@ fn load_user_prompt(name: &str) -> Option<String> {
     }
 }
 
-pub fn seed_prompts() {
+pub fn seed_prompts(force: bool) {
     fs::create_dir_all(DEX_PROMPTS_DIR).ok();
     for (name, builtin_content) in BUILTIN_TEMPLATES {
         let path = PathBuf::from(DEX_PROMPTS_DIR).join(name);
-        if !path.exists() {
+        if force || !path.exists() {
             fs::write(&path, builtin_content).ok();
         }
     }
     let reviewers_path = PathBuf::from(DEX_DIR).join("reviewers.json");
-    if !reviewers_path.exists() {
+    if force || !reviewers_path.exists() {
         fs::write(&reviewers_path, BUILTIN_REVIEWERS).ok();
     }
-}
-
-pub fn force_seed_prompts() {
-    fs::create_dir_all(DEX_PROMPTS_DIR).ok();
-    for (name, builtin_content) in BUILTIN_TEMPLATES {
-        let path = PathBuf::from(DEX_PROMPTS_DIR).join(name);
-        fs::write(&path, builtin_content).ok();
-    }
-    fs::write(
-        PathBuf::from(DEX_DIR).join("reviewers.json"),
-        BUILTIN_REVIEWERS,
-    )
-    .ok();
 }
 
 pub fn render_prompt(name: &str, data: &Value) -> String {
