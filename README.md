@@ -1,4 +1,4 @@
-# Dex - a Ralph loop that works
+# Dex - a Ralph-inspired loop that actually works
 
 [![Rust](https://img.shields.io/badge/Rust-stable-000000?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
