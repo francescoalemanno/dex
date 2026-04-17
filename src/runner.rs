@@ -33,11 +33,19 @@ pub fn kill_all_children() {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputFormat {
+    Plain,
+    JsonND,
+    PiJsonND,
+}
+
 pub struct CLIConfig {
     pub cmd: &'static str,
     pub args: &'static [&'static str],
     pub stdin: bool,
     pub env: &'static [(&'static str, &'static str)],
+    pub output_format: OutputFormat,
 }
 
 pub static CLI_CONFIGS: &[(&str, CLIConfig)] = &[
@@ -51,6 +59,7 @@ pub static CLI_CONFIGS: &[(&str, CLIConfig)] = &[
                 "OPENCODE_CONFIG_CONTENT",
                 r#"{"$schema":"https://opencode.ai/config.json","permission":"allow","lsp":false}"#,
             )],
+            output_format: OutputFormat::JsonND,
         },
     ),
     (
@@ -60,6 +69,7 @@ pub static CLI_CONFIGS: &[(&str, CLIConfig)] = &[
             args: &["exec", "--yolo", "--ephemeral", "--json"],
             stdin: true,
             env: &[],
+            output_format: OutputFormat::JsonND,
         },
     ),
     (
@@ -73,6 +83,7 @@ pub static CLI_CONFIGS: &[(&str, CLIConfig)] = &[
             ],
             stdin: false,
             env: &[],
+            output_format: OutputFormat::Plain,
         },
     ),
     (
@@ -82,6 +93,7 @@ pub static CLI_CONFIGS: &[(&str, CLIConfig)] = &[
             args: &["exec", "--skip-permissions-unsafe"],
             stdin: false,
             env: &[],
+            output_format: OutputFormat::Plain,
         },
     ),
     (
@@ -91,6 +103,7 @@ pub static CLI_CONFIGS: &[(&str, CLIConfig)] = &[
             args: &["-y", "-p"],
             stdin: false,
             env: &[],
+            output_format: OutputFormat::Plain,
         },
     ),
     (
@@ -100,6 +113,7 @@ pub static CLI_CONFIGS: &[(&str, CLIConfig)] = &[
             args: &["--no-session", "-p"],
             stdin: false,
             env: &[],
+            output_format: OutputFormat::PiJsonND,
         },
     ),
     (
@@ -109,6 +123,7 @@ pub static CLI_CONFIGS: &[(&str, CLIConfig)] = &[
             args: &["-ephemeral", "-no-echo", "-no-thinking"],
             stdin: false,
             env: &[],
+            output_format: OutputFormat::Plain,
         },
     ),
 ];
@@ -253,7 +268,7 @@ impl Runner {
 
         let (tx, rx) = mpsc::channel();
         let start = Instant::now();
-        let mut last_output = start;
+        let mut last_display = start;
 
         let tx_out = tx.clone();
         let stdout_thread = std::thread::spawn(move || {
@@ -291,13 +306,13 @@ impl Runner {
         loop {
             match rx.recv_timeout(self.timeout) {
                 Ok(StreamLine::Stdout(text)) => {
-                    if process_stdout_line(&text, start, &self.label) {
-                        last_output = Instant::now();
-                    } else if last_output.elapsed() >= Duration::from_secs(60) {
+                    if process_stdout_line(&text, start, &self.label, cfg.output_format) {
+                        last_display = Instant::now();
+                    } else if last_display.elapsed() >= Duration::from_secs(60) {
                         let mut stream = StandardStream::stderr(ColorChoice::Auto);
                         write_prefix(&mut stream, start, &self.label);
                         let _ = writeln!(stream, " Working on it");
-                        last_output = Instant::now();
+                        last_display = Instant::now();
                     }
                 }
                 Ok(StreamLine::Stderr(text)) => {
@@ -349,14 +364,28 @@ fn write_prefix(stream: &mut StandardStream, start: Instant, label: &str) {
     }
 }
 
-fn process_stdout_line(text: &str, start: Instant, label: &str) -> bool {
-    let mut stream = StandardStream::stderr(ColorChoice::Auto);
+fn process_stdout_line(text: &str, start: Instant, label: &str, format: OutputFormat) -> bool {
+    match format {
+        OutputFormat::Plain => display_plain(text, start, label),
+        OutputFormat::JsonND => display_jsonnd(text, start, label),
+        OutputFormat::PiJsonND => display_pi_jsonnd(text, start, label),
+    }
+}
 
+fn display_plain(text: &str, start: Instant, label: &str) -> bool {
+    let mut stream = StandardStream::stderr(ColorChoice::Auto);
+    write_prefix(&mut stream, start, label);
+    let _ = writeln!(stream, " {}", text);
+    true
+}
+
+fn display_jsonnd(text: &str, start: Instant, label: &str) -> bool {
     if let Ok(obj) = serde_json::from_str::<Value>(text) {
         if let Some(map) = obj.as_object() {
             let mut texts: Vec<String> = Vec::new();
             walk_json(&Value::Object(map.clone()), &mut texts);
             if !texts.is_empty() {
+                let mut stream = StandardStream::stderr(ColorChoice::Auto);
                 for t in &texts {
                     write_prefix(&mut stream, start, label);
                     let _ = writeln!(stream, " {}", t);
@@ -366,9 +395,36 @@ fn process_stdout_line(text: &str, start: Instant, label: &str) -> bool {
         }
         return false;
     }
-    write_prefix(&mut stream, start, label);
-    let _ = writeln!(stream, " {}", text);
-    true
+    display_plain(text, start, label)
+}
+
+fn display_pi_jsonnd(text: &str, start: Instant, label: &str) -> bool {
+    if let Ok(obj) = serde_json::from_str::<Value>(text) {
+        if obj.get("type").and_then(|v| v.as_str()) == Some("message_end") {
+            if let Some(msg) = obj.get("message") {
+                if msg.get("role").and_then(|v| v.as_str()) == Some("assistant") {
+                    if let Some(content) = msg.get("content").and_then(|v| v.as_array()) {
+                        let mut displayed = false;
+                        let mut stream = StandardStream::stderr(ColorChoice::Auto);
+                        for item in content {
+                            if item.get("type").and_then(|v| v.as_str()) == Some("text") {
+                                if let Some(s) = item.get("text").and_then(|v| v.as_str()) {
+                                    if !s.is_empty() {
+                                        write_prefix(&mut stream, start, label);
+                                        let _ = writeln!(stream, " {}", s);
+                                        displayed = true;
+                                    }
+                                }
+                            }
+                        }
+                        return displayed;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+    display_plain(text, start, label)
 }
 
 fn walk_json(v: &Value, texts: &mut Vec<String>) {
