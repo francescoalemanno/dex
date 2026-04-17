@@ -69,6 +69,8 @@ struct ResearchEntry {
     description: String,
     timestamp: u64,
     confidence: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    notes: Option<String>,
 }
 
 struct BenchmarkOutcome {
@@ -318,6 +320,25 @@ fn load_state() -> Result<Option<ResearchState>, String> {
         })),
         None => Ok(None),
     }
+}
+
+fn capture_research_notes() -> Option<String> {
+    let path = dex_path("research-notes.md");
+    let content = fs::read_to_string(&path).ok()?;
+    let _ = fs::remove_file(&path);
+    let trimmed = content.trim().to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+fn latest_notes(results: &[ResearchEntry]) -> Option<String> {
+    results
+        .iter()
+        .rev()
+        .find_map(|r| r.notes.clone())
 }
 
 // ── Benchmark execution ──
@@ -606,7 +627,7 @@ pub fn research_status() -> Result<(), String> {
 // ── Clear ──
 
 pub fn research_clear() -> Result<(), String> {
-    let files = ["research.jsonl", "research-ideas.md"];
+    let files = ["research.jsonl", "research-notes.md"];
     let mut removed = false;
     for name in &files {
         let path = dex_path(name);
@@ -677,6 +698,7 @@ pub fn research_new(
         description: "baseline".to_string(),
         timestamp: now_timestamp(),
         confidence: None,
+        notes: None,
     };
     append_result(&baseline_entry)?;
 
@@ -784,6 +806,8 @@ fn research_loop(
             .filter(|&b| b != baseline)
             .map(|b| format_delta_pct(b, baseline));
 
+        let research_notes = latest_notes(&state.results);
+
         let prompt = render_prompt(
             "research.txt",
             &serde_json::json!({
@@ -801,6 +825,7 @@ fn research_loop(
                 "DeadEnds": if dead_ends.is_empty() { None } else { Some(dead_ends) },
                 "FilesInScope": config.files_in_scope,
                 "Constraints": if config.constraints.is_empty() { None } else { Some(&config.constraints) },
+                "ResearchNotes": research_notes,
             }),
         );
 
@@ -828,6 +853,9 @@ fn research_loop(
                 continue;
             }
         }
+
+        // Capture research notes before cleaning (agent wrote them outside git)
+        let notes = capture_research_notes();
 
         // Clean working tree so benchmark runs against committed state
         let _ = git_clean_working_tree();
@@ -861,6 +889,7 @@ fn research_loop(
                         description: format!("{} (spawn error)", description),
                         timestamp: now_timestamp(),
                         confidence: None,
+                        notes: notes.clone(),
                     };
                     append_result(&entry)?;
                     state.results.push(entry);
@@ -884,6 +913,7 @@ fn research_loop(
                 description: format!("{} ({})", description, reason),
                 timestamp: now_timestamp(),
                 confidence: None,
+                notes: notes.clone(),
             };
             append_result(&entry)?;
             state.results.push(entry);
@@ -906,6 +936,7 @@ fn research_loop(
                     description: format!("{} (metric not found)", description),
                     timestamp: now_timestamp(),
                     confidence: None,
+                    notes: notes.clone(),
                 };
                 append_result(&entry)?;
                 state.results.push(entry);
@@ -931,6 +962,7 @@ fn research_loop(
                             description: format!("{} (checks failed)", description),
                             timestamp: now_timestamp(),
                             confidence: conf,
+                            notes: notes.clone(),
                         };
                         append_result(&entry)?;
                         state.results.push(entry);
@@ -949,6 +981,7 @@ fn research_loop(
                         description: format!("{} (checks error)", description),
                         timestamp: now_timestamp(),
                         confidence: None,
+                        notes: notes.clone(),
                     };
                     append_result(&entry)?;
                     state.results.push(entry);
@@ -974,6 +1007,7 @@ fn research_loop(
             description: description.clone(),
             timestamp: now_timestamp(),
             confidence: conf,
+            notes,
         };
         append_result(&entry)?;
         state.results.push(entry);
@@ -1109,6 +1143,7 @@ mod tests {
                 description: "baseline".into(),
                 timestamp: 0,
                 confidence: None,
+                notes: None,
             },
             ResearchEntry {
                 run: 2,
@@ -1118,6 +1153,7 @@ mod tests {
                 description: "opt".into(),
                 timestamp: 0,
                 confidence: None,
+                notes: None,
             },
         ];
         assert!(compute_confidence(&results, 100.0, "lower").is_none());
@@ -1134,6 +1170,7 @@ mod tests {
                 description: "baseline".into(),
                 timestamp: 0,
                 confidence: None,
+                notes: None,
             },
             ResearchEntry {
                 run: 2,
@@ -1143,6 +1180,7 @@ mod tests {
                 description: "opt1".into(),
                 timestamp: 0,
                 confidence: None,
+                notes: None,
             },
             ResearchEntry {
                 run: 3,
@@ -1152,6 +1190,7 @@ mod tests {
                 description: "opt2".into(),
                 timestamp: 0,
                 confidence: None,
+                notes: None,
             },
             ResearchEntry {
                 run: 4,
@@ -1161,6 +1200,7 @@ mod tests {
                 description: "opt3".into(),
                 timestamp: 0,
                 confidence: None,
+                notes: None,
             },
         ];
         let conf = compute_confidence(&results, 100.0, "lower");

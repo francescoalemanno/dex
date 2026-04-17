@@ -26,13 +26,19 @@ Baseline: {{Baseline}}
 ## Constraints
 {{Constraints}}
 {{/if}}
+{{#if ResearchNotes}}
+
+## Research Notes
+{{ResearchNotes}}
+{{/if}}
 
 ## Instructions
 
 1. Read relevant source files and understand what drives {{MetricName}}
 2. Make ONE focused change to improve it
-3. Commit with message: research: <explanation of what you changed>
-4. STOP immediately after committing
+3. Write {{dex_path "research-notes.md"}} with what you learned: why things work or fail, hypotheses about the system, and promising ideas to try next. Prune stale or already-tried entries to keep it concise. Do NOT commit this file.
+4. Commit with message: research: <explanation of what you changed>
+5. STOP immediately after committing
 
 Do NOT run the benchmark yourself — Dex handles benchmarking.
 Do NOT revert or undo previous changes — Dex handles that.
