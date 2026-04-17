@@ -7,7 +7,7 @@ use crate::core::{
     append_progress, dex_path, ensure_dex_dir, git_trimmed_output, read_dex_file, remove_dex_file,
     render_prompt, save_feedbacks, save_plan_request,
 };
-use crate::plan::{all_tasks_done, next_open_task};
+use crate::plan::{all_tasks_done, next_open_task, plan_step_counts};
 use crate::runner::Runner;
 use crate::ui::{
     banner, err_msg, info, phase_detail, prompt_choice, prompt_multiline, show_block,
@@ -180,6 +180,20 @@ fn edit_plan_in_editor(plan: &str) -> Result<Option<String>, String> {
 
 // ── Phase 2: Implementation ──
 
+fn format_task_label(header: &str) -> String {
+    let header = header.trim();
+    if header.is_empty() {
+        return "(unnamed task)".to_string();
+    }
+
+    let label = header.trim_start_matches('#').trim();
+    if label.is_empty() {
+        "(unnamed task)".to_string()
+    } else {
+        label.to_string()
+    }
+}
+
 pub fn impl_phase(r: &Runner, plan_path: &str) -> Result<(), String> {
     banner("IMPLEMENTATION");
 
@@ -196,28 +210,19 @@ pub fn impl_phase(r: &Runner, plan_path: &str) -> Result<(), String> {
             }
         };
 
-        let header = if task.header.is_empty() {
-            "(unnamed task)".to_string()
-        } else {
-            task.header.clone()
-        };
-        phase_detail(
-            "progress",
-            &format!(
-                "iteration {} \u{2014} {}/{} tasks remaining",
-                iteration,
-                task.open,
-                task.open + task.done,
-            ),
+        let (plan_steps_open, plan_steps_total) = plan_step_counts(plan_path)?;
+        let header = format_task_label(&task.header);
+        let iteration_detail = format!(
+            "{} of {} plan steps remaining",
+            plan_steps_open, plan_steps_total
         );
-        phase_detail("task", &header);
+        phase_detail(&format!("Iteration {}", iteration), &iteration_detail);
+        phase_detail("Job", &header);
         append_progress(
             &format!("Implementation — iteration {}", iteration),
             &format!(
-                "Working on: {} ({}/{} steps open)",
-                header,
-                task.open,
-                task.open + task.done
+                "Iteration {}: {}\nJob: {}",
+                iteration, iteration_detail, header
             ),
         );
 
@@ -535,7 +540,7 @@ fn is_clean_review(review: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_clean_review, read_bare_request_file, Reviewers};
+    use super::{format_task_label, is_clean_review, read_bare_request_file, Reviewers};
     use std::fs;
     use std::path::PathBuf;
 
@@ -615,6 +620,16 @@ mod tests {
             read_bare_request_file(path.to_str().unwrap()).unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn format_task_label_strips_markdown_heading_prefix() {
+        assert_eq!(
+            format_task_label("### Task 2: Build API"),
+            "Task 2: Build API"
+        );
+        assert_eq!(format_task_label("## Overview"), "Overview");
+        assert_eq!(format_task_label(""), "(unnamed task)");
     }
 }
 

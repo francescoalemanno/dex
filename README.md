@@ -157,7 +157,7 @@ This loop repeats until you're satisfied. The agent never touches code during pl
 
 ### Phase 2: Implementation
 
-`dex apply` parses the plan's checkboxes into task groups. Each iteration, it picks the first incomplete group, hands it to the agent with the plan as context, and lets the agent implement, test, and commit. Then the CLI process exits, context is cleared, and the next iteration starts fresh.
+`dex apply` parses markdown sections that contain checkbox items into task groups. Each iteration, it picks the first incomplete section, hands it to the agent with the plan as context, and lets the agent implement, test, and commit. Then the CLI process exits, context is cleared, and the next iteration starts fresh.
 
 This is the Ralph insight at work: one task per context window keeps the agent in its smart zone. dex just makes the task selection deterministic instead of leaving it to the model.
 

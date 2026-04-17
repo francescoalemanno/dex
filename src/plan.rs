@@ -17,6 +17,20 @@ impl TaskGroup {
     pub fn body(&self) -> String {
         self.lines.join("\n")
     }
+
+    fn has_checkboxes(&self) -> bool {
+        self.open + self.done > 0
+    }
+}
+
+fn push_group(groups: &mut Vec<TaskGroup>, mut group: TaskGroup) {
+    while matches!(group.lines.last(), Some(line) if line.trim().is_empty()) {
+        group.lines.pop();
+    }
+
+    if group.has_checkboxes() {
+        groups.push(group);
+    }
 }
 
 pub fn parse_plan(path: &str) -> Result<Vec<TaskGroup>, String> {
@@ -26,46 +40,52 @@ pub fn parse_plan(path: &str) -> Result<Vec<TaskGroup>, String> {
 
 pub fn parse_tasks(content: &str) -> Vec<TaskGroup> {
     let checkbox_re = Regex::new(r"^(\s*)-\s+\[([ xX])\]\s+(.*)$").unwrap();
-    let lines: Vec<&str> = content.split('\n').collect();
+    let heading_re = Regex::new(r"^(#{1,6})\s+.*$").unwrap();
     let mut groups: Vec<TaskGroup> = Vec::new();
-    let mut cur: Option<TaskGroup> = None;
-    let mut last_header = String::new();
+    let mut cur = TaskGroup {
+        header: String::new(),
+        lines: Vec::new(),
+        open: 0,
+        done: 0,
+    };
 
-    for line in &lines {
+    for line in content.split('\n') {
         let trimmed = line.trim();
 
-        if trimmed.starts_with('#') {
-            last_header = trimmed.to_string();
-        }
-
-        if checkbox_re.is_match(line) {
-            let group = cur.get_or_insert_with(|| TaskGroup {
-                header: last_header.clone(),
+        if heading_re.is_match(trimmed) {
+            push_group(&mut groups, cur);
+            cur = TaskGroup {
+                header: trimmed.to_string(),
                 lines: Vec::new(),
                 open: 0,
                 done: 0,
-            });
-            group.lines.push(line.to_string());
-            if let Some(caps) = checkbox_re.captures(line) {
-                if &caps[2] == " " {
-                    group.open += 1;
-                } else {
-                    group.done += 1;
-                }
+            };
+            continue;
+        }
+
+        cur.lines.push(line.to_string());
+        if let Some(caps) = checkbox_re.captures(line) {
+            if &caps[2] == " " {
+                cur.open += 1;
+            } else {
+                cur.done += 1;
             }
-        } else if let Some(g) = cur.take() {
-            groups.push(g);
         }
     }
-    if let Some(g) = cur {
-        groups.push(g);
-    }
+    push_group(&mut groups, cur);
     groups
 }
 
 pub fn all_tasks_done(path: &str) -> Result<bool, String> {
     let groups = parse_plan(path)?;
     Ok(groups.iter().all(|g| g.is_complete()))
+}
+
+pub fn plan_step_counts(path: &str) -> Result<(usize, usize), String> {
+    let groups = parse_plan(path)?;
+    let open = groups.iter().map(|g| g.open).sum();
+    let total = groups.iter().map(|g| g.open + g.done).sum();
+    Ok((open, total))
 }
 
 pub fn next_open_task(path: &str) -> Result<Option<TaskGroup>, String> {
@@ -103,25 +123,30 @@ mod tests {
 
     #[test]
     fn test_parse_tasks() {
-        let plan = "# My Plan\n\n## Setup Database\n- [x] Create schema\n- [ ] Write migrations\n- [ ] Add seed data\n\nSome notes here.\n\n## Build API\n- [ ] Create router\n- [ ] Add handlers\n- [ ] Write tests\n\n## Documentation\n- [x] Write README\n- [x] Add examples\n";
+        let plan = "# My Plan\n\n## Overview\nSome background\n- [x] Scope confirmed\n\n## Implementation Steps\n### Task 1: Setup Database\n**Files:**\n- Modify: `src/db.rs`\n\n- [x] Create schema\n\nSome notes here.\n\n- [ ] Write migrations\n- [ ] Add seed data\n\n### Task 2: Build API\n- [ ] Create router\n- [ ] Add handlers\n- [ ] Write tests\n\n## Documentation\n- [x] Write README\n- [x] Add examples\n";
 
         let groups = parse_tasks(plan);
-        assert_eq!(groups.len(), 3);
+        assert_eq!(groups.len(), 4);
 
-        // Group 1: Setup Database
-        assert_eq!(groups[0].header, "## Setup Database");
-        assert_eq!(groups[0].open, 2);
+        assert_eq!(groups[0].header, "## Overview");
+        assert_eq!(groups[0].open, 0);
         assert_eq!(groups[0].done, 1);
-        assert!(!groups[0].is_complete());
+        assert_eq!(groups[0].body(), "Some background\n- [x] Scope confirmed");
 
-        // Group 2: Build API
-        assert_eq!(groups[1].header, "## Build API");
-        assert_eq!(groups[1].open, 3);
-        assert_eq!(groups[1].done, 0);
+        assert_eq!(groups[1].header, "### Task 1: Setup Database");
+        assert_eq!(groups[1].open, 2);
+        assert_eq!(groups[1].done, 1);
+        assert!(groups[1].body().contains("**Files:**"));
+        assert!(groups[1].body().contains("- Modify: `src/db.rs`"));
+        assert!(groups[1].body().contains("Some notes here."));
+        assert!(!groups[1].is_complete());
 
-        // Group 3: Documentation (all done)
-        assert_eq!(groups[2].header, "## Documentation");
-        assert!(groups[2].is_complete());
+        assert_eq!(groups[2].header, "### Task 2: Build API");
+        assert_eq!(groups[2].open, 3);
+        assert_eq!(groups[2].done, 0);
+
+        assert_eq!(groups[3].header, "## Documentation");
+        assert!(groups[3].is_complete());
     }
 
     #[test]
@@ -136,6 +161,44 @@ mod tests {
         let groups = parse_tasks(plan);
         assert_eq!(groups.len(), 1);
         assert!(groups[0].is_complete());
+    }
+
+    #[test]
+    fn test_parse_tasks_keeps_entire_section_together() {
+        let plan =
+            "## Build\n- [ ] first\n\nSome notes here.\n\n- [ ] second\n\n## Next\n- [ ] third\n";
+        let groups = parse_tasks(plan);
+
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].header, "## Build");
+        assert_eq!(groups[0].open, 2);
+        assert_eq!(
+            groups[0].body(),
+            "- [ ] first\n\nSome notes here.\n\n- [ ] second"
+        );
+    }
+
+    #[test]
+    fn test_parse_tasks_splits_on_nested_headers() {
+        let plan = "## Parent\n- [ ] parent step\n### Child\n- [ ] child step\n";
+        let groups = parse_tasks(plan);
+
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].header, "## Parent");
+        assert_eq!(groups[0].open, 1);
+        assert_eq!(groups[1].header, "### Child");
+        assert_eq!(groups[1].open, 1);
+    }
+
+    #[test]
+    fn test_plan_step_counts_are_plan_wide() {
+        let path = write_temp_plan(
+            "## Overview\n- [x] aligned scope\n## Build\n- [ ] first\n- [x] second\n### Verify\n- [ ] third\n",
+        );
+        let counts = plan_step_counts(path.to_str().unwrap());
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(counts.unwrap(), (2, 4));
     }
 
     #[test]
