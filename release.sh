@@ -19,6 +19,20 @@ if [[ ! "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   exit 1
 fi
 
+# Strip the 'v' prefix for Cargo.toml
+cargo_version="${version#v}"
+
+# Update Cargo.toml version
+if ! sed -i '' "s/^version = \"[0-9]\+\.[0-9]\+\.[0-9]\+\"$/version = \"$cargo_version\"/" Cargo.toml 2>/dev/null; then
+  sed -i "s/^version = \"[0-9]\+\.[0-9]\+\.[0-9]\+\"$/version = \"$cargo_version\"/" Cargo.toml
+fi
+
+# Commit the version bump
+if [ -n "$(git status --porcelain Cargo.toml)" ]; then
+  git add Cargo.toml
+  git commit -m "chore: bump version to $cargo_version"
+fi
+
 # Confirm
 echo "Will tag $version and push to origin."
 read -rp "Continue? [y/N] " confirm
