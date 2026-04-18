@@ -412,6 +412,20 @@ fn cmd_apply(runner: &Runner, _cmd: ApplyCmd) -> CmdResult {
         ));
     }
 
+    if git_trimmed_output(&["rev-parse", "--is-inside-work-tree"]).is_err() {
+        return Err(CmdError::Failure(
+            "apply requires a git repository. Please run from inside a git repo.".into(),
+        ));
+    }
+    let status = git_trimmed_output(&["status", "--porcelain"])
+        .map_err(|e| CmdError::Failure(format!("failed to check git status: {}", e)))?;
+    if !status.is_empty() {
+        return Err(CmdError::Failure(
+            "apply requires a clean working tree. Please commit or stash your changes first."
+                .into(),
+        ));
+    }
+
     impl_phase(runner, &plan_path)?;
     banner("DONE");
     info("Implementation complete.");

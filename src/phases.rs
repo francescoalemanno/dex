@@ -4,7 +4,8 @@ use std::fs;
 use std::process::Command;
 
 use crate::core::{
-    append_progress, dex_path, ensure_dex_dir, git_trimmed_output, read_dex_file, remove_dex_file,
+    append_impl_commits, dex_path, ensure_dex_dir, git_commits_between, git_head,
+    git_trimmed_output, impl_commit_history_summary, read_dex_file, remove_dex_file,
     render_prompt, save_feedbacks, save_plan_request,
 };
 use crate::plan::{all_tasks_done, next_open_task, plan_step_counts};
@@ -197,14 +198,12 @@ fn format_task_label(header: &str) -> String {
 pub fn impl_phase(r: &Runner, plan_path: &str) -> Result<(), String> {
     banner("IMPLEMENTATION");
 
-    let progress_path = dex_path("progress.txt");
     let mut iteration = 1;
     loop {
         let task = next_open_task(plan_path)?;
         let task = match task {
             Some(t) => t,
             None => {
-                append_progress("Implementation", "All tasks complete.");
                 info("All tasks complete!");
                 return Ok(());
             }
@@ -218,29 +217,21 @@ pub fn impl_phase(r: &Runner, plan_path: &str) -> Result<(), String> {
         );
         phase_detail(&format!("Iteration {}", iteration), &iteration_detail);
         phase_detail("Job", &header);
-        append_progress(
-            &format!("Implementation — iteration {}", iteration),
-            &format!(
-                "Iteration {}: {}\nJob: {}",
-                iteration, iteration_detail, header
-            ),
-        );
+
+        let commit_history = impl_commit_history_summary().unwrap_or_default();
+        let state_a = git_head().ok();
 
         let p = render_prompt(
             "impl.txt",
             &serde_json::json!({
                 "PlanPath": plan_path,
-                "ProgressFile": progress_path,
                 "TaskHeader": task.header,
                 "TaskBody": task.body(),
+                "CommitHistory": commit_history,
             }),
         );
 
         if let Err(e) = r.run(&p) {
-            append_progress(
-                &format!("Implementation — iteration {}", iteration),
-                &format!("FAILED: {}", e),
-            );
             err_msg(&format!("CLI error: {}", e));
             return Err(format!(
                 "implementation failed after automatic retries: {}",
@@ -248,13 +239,14 @@ pub fn impl_phase(r: &Runner, plan_path: &str) -> Result<(), String> {
             ));
         }
 
-        append_progress(
-            &format!("Implementation — iteration {}", iteration),
-            &format!("Completed: {}", header),
-        );
+        if let Some(ref before) = state_a {
+            if let Ok(after) = git_head() {
+                let new_commits = git_commits_between(before, &after);
+                append_impl_commits(&new_commits);
+            }
+        }
 
         if all_tasks_done(plan_path)? {
-            append_progress("Implementation", "All tasks complete.");
             info("All tasks complete!");
             return Ok(());
         }
@@ -308,10 +300,6 @@ pub fn review_phase(
     let reviewers = load_reviewers();
 
     // Broad pass: all reviewers, once
-    append_progress(
-        "Review — broad pass",
-        "Starting broad review with all reviewers.",
-    );
     let issues = run_review_fanout(
         r,
         plan_path,
@@ -324,24 +312,11 @@ pub fn review_phase(
         parallel,
     );
     if let Some(ref issues) = issues {
-        append_progress(
-            "Review — broad pass",
-            &format!("Issues found by {} reviewers, running fixer.", issues.len()),
-        );
         run_fixer(r, plan_path, base_ref, git_available, issues)?;
-    } else {
-        append_progress("Review — broad pass", "No issues found.");
     }
 
     // Focused pass: critical/major reviewers, loop till clean
     for round in 1..=MAX_FOCUSED_ROUNDS {
-        append_progress(
-            &format!(
-                "Review — focused pass round {}/{}",
-                round, MAX_FOCUSED_ROUNDS
-            ),
-            "Starting focused review (critical/major issues only).",
-        );
         let issues = run_review_fanout(
             r,
             plan_path,
@@ -355,36 +330,15 @@ pub fn review_phase(
         );
         match issues {
             None => {
-                append_progress(
-                    &format!(
-                        "Review — focused pass round {}/{}",
-                        round, MAX_FOCUSED_ROUNDS
-                    ),
-                    "ZERO ISSUES. Review phase complete.",
-                );
                 info("All focused reviewers report ZERO ISSUES. Review phase complete!");
                 return Ok(());
             }
             Some(ref issues) => {
-                append_progress(
-                    &format!(
-                        "Review — focused pass round {}/{}",
-                        round, MAX_FOCUSED_ROUNDS
-                    ),
-                    &format!("Issues found by {} reviewers, running fixer.", issues.len()),
-                );
                 run_fixer(r, plan_path, base_ref, git_available, issues)?;
             }
         }
     }
 
-    append_progress(
-        "Review",
-        &format!(
-            "Focused review cap of {} rounds reached, accepting current state.",
-            MAX_FOCUSED_ROUNDS
-        ),
-    );
     warn(&format!(
         "Focused review cap of {} rounds reached, accepting current state.",
         MAX_FOCUSED_ROUNDS
