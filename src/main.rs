@@ -19,7 +19,7 @@ use crate::core::{
 };
 use crate::phases::{bare_phase, finalize_phase, impl_phase, plan_phase, review_phase};
 use crate::plan::validate_candidate_plan;
-use crate::runner::{kill_all_children, Runner};
+use crate::runner::{kill_all_children, set_verbose, Runner};
 use crate::ui::{app_header, banner, err_msg, info};
 
 const REVISION: &str = env!("CARGO_PKG_VERSION");
@@ -40,6 +40,10 @@ struct Args {
     /// coding CLI to use; must be available in PATH
     #[argh(option, arg_name = "name")]
     cli: Option<String>,
+
+    /// display prompts sent to the agent
+    #[argh(switch)]
+    verbose: bool,
 
     /// kill agent after this many seconds idle
     #[argh(option, default = "1200")]
@@ -264,6 +268,8 @@ fn main() {
         println!("dex {}", REVISION);
         return;
     }
+
+    set_verbose(args.verbose);
 
     if let Some(ref name) = args.cli {
         if let Err(e) = crate::runner::validate_cli_name(name) {
@@ -739,7 +745,7 @@ mod tests {
 
         assert!(
             help.starts_with(
-                "Usage: dex [--version] [--update-prompts] [--cli <name>] [--timeout <timeout>] [<command>] [<args>]"
+                "Usage: dex [--version] [--update-prompts] [--cli <name>] [--verbose] [--timeout <timeout>] [<command>] [<args>]"
             ),
             "unexpected help output: {help}"
         );

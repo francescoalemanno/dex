@@ -2,11 +2,22 @@ use serde_json::Value;
 use shared_child::SharedChild;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
-use termcolor::{ColorChoice, StandardStream};
+use termcolor::StandardStream;
 
-use crate::ui::{err_msg, phase_detail, warn, write_timestamp};
+use crate::ui::{err_msg, locked_stderr, phase_detail, show_block, warn, write_timestamp};
+
+static VERBOSE: AtomicBool = AtomicBool::new(false);
+
+pub fn set_verbose(v: bool) {
+    VERBOSE.store(v, Ordering::Relaxed);
+}
+
+fn is_verbose() -> bool {
+    VERBOSE.load(Ordering::Relaxed)
+}
 
 static CHILDREN: Mutex<Vec<Arc<SharedChild>>> = Mutex::new(Vec::new());
 
@@ -233,6 +244,10 @@ impl Runner {
         let display_args: Vec<&str> = cfg.args.to_vec();
         phase_detail("exec", &format!("{} {}", cfg.cmd, display_args.join(" ")));
 
+        if is_verbose() {
+            show_block("Prompt", prompt);
+        }
+
         let mut cmd = Command::new(cfg.cmd);
         cmd.args(&args);
         cmd.stdout(Stdio::piped());
@@ -309,13 +324,14 @@ impl Runner {
                     if process_stdout_line(&text, start, &self.label, cfg.output_format) {
                         last_display = Instant::now();
                     } else if last_display.elapsed() >= Duration::from_secs(60) {
-                        let mut stream = StandardStream::stderr(ColorChoice::Auto);
+                        let mut stream = locked_stderr();
                         write_prefix(&mut stream, start, &self.label);
                         let _ = writeln!(stream, " Working on it");
                         last_display = Instant::now();
                     }
                 }
                 Ok(StreamLine::Stderr(text)) => {
+                    let _guard = locked_stderr();
                     if self.label.is_empty() {
                         eprintln!("{}", text);
                     } else {
@@ -373,7 +389,7 @@ fn process_stdout_line(text: &str, start: Instant, label: &str, format: OutputFo
 }
 
 fn display_plain(text: &str, start: Instant, label: &str) -> bool {
-    let mut stream = StandardStream::stderr(ColorChoice::Auto);
+    let mut stream = locked_stderr();
     write_prefix(&mut stream, start, label);
     let _ = writeln!(stream, " {}", text);
     true
@@ -385,7 +401,7 @@ fn display_jsonnd(text: &str, start: Instant, label: &str) -> bool {
             let mut texts: Vec<String> = Vec::new();
             walk_json(&Value::Object(map.clone()), &mut texts);
             if !texts.is_empty() {
-                let mut stream = StandardStream::stderr(ColorChoice::Auto);
+                let mut stream = locked_stderr();
                 for t in &texts {
                     write_prefix(&mut stream, start, label);
                     let _ = writeln!(stream, " {}", t);
@@ -405,7 +421,7 @@ fn display_pi_jsonnd(text: &str, start: Instant, label: &str) -> bool {
                 if msg.get("role").and_then(|v| v.as_str()) == Some("assistant") {
                     if let Some(content) = msg.get("content").and_then(|v| v.as_array()) {
                         let mut displayed = false;
-                        let mut stream = StandardStream::stderr(ColorChoice::Auto);
+                        let mut stream = locked_stderr();
                         for item in content {
                             if item.get("type").and_then(|v| v.as_str()) == Some("text") {
                                 if let Some(s) = item.get("text").and_then(|v| v.as_str()) {

@@ -1,24 +1,49 @@
 use std::io::{self, BufRead, Write};
+use std::ops::{Deref, DerefMut};
+use std::sync::{Mutex, MutexGuard};
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 use termimad::MadSkin;
 
-fn stderr() -> StandardStream {
-    StandardStream::stderr(ColorChoice::Auto)
+/// Global lock that serialises all terminal output so parallel threads
+/// never interleave their prints.
+static PRINT_LOCK: Mutex<()> = Mutex::new(());
+
+/// A guard that holds the global print lock and a `StandardStream` to stderr.
+/// Dereferences to `StandardStream` so it can be used directly as a writer.
+pub(crate) struct Term {
+    _lock: MutexGuard<'static, ()>,
+    stream: StandardStream,
 }
 
-fn write_styled(color: Option<Color>, bold: bool, dimmed: bool, text: &str) {
-    let mut stream = stderr();
-    let mut spec = ColorSpec::new();
-    spec.set_fg(color).set_bold(bold).set_dimmed(dimmed);
-    let _ = stream.set_color(&spec);
-    let _ = write!(stream, "{}", text);
-    let _ = stream.reset();
+impl Deref for Term {
+    type Target = StandardStream;
+    fn deref(&self) -> &StandardStream {
+        &self.stream
+    }
+}
+
+impl DerefMut for Term {
+    fn deref_mut(&mut self) -> &mut StandardStream {
+        &mut self.stream
+    }
+}
+
+/// Acquire the global print lock and return a locked stderr writer.
+pub(crate) fn locked_stderr() -> Term {
+    let guard = match PRINT_LOCK.lock() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+    Term {
+        _lock: guard,
+        stream: StandardStream::stderr(ColorChoice::Auto),
+    }
 }
 const REVISION: &str = env!("CARGO_PKG_VERSION");
 
 /// Print the application header box in cyan with Unicode box-drawing characters.
 pub fn app_header() {
-    let mut stream = stderr();
+    let mut stream = locked_stderr();
     let line1 = "DEX v".to_owned() + REVISION;
     let line2 = "Agentic Orchestrator";
     let width = line2.len() + 4; // padding
@@ -64,7 +89,7 @@ pub fn app_header() {
 
 /// Print a phase banner: ▸ PHASE_NAME in magenta+bold.
 pub fn banner(phase: &str) {
-    let mut stream = stderr();
+    let mut stream = locked_stderr();
     let _ = writeln!(stream);
     let mut spec = ColorSpec::new();
     spec.set_fg(Some(Color::Magenta)).set_bold(true);
@@ -77,7 +102,7 @@ pub fn banner(phase: &str) {
 /// Print an indented key: value detail line under a phase.
 /// The key (including colon) is blue; the value is white.
 pub fn phase_detail(key: &str, value: &str) {
-    let mut stream = stderr();
+    let mut stream = locked_stderr();
     let mut key_spec = ColorSpec::new();
     key_spec.set_fg(Some(Color::Blue));
     let _ = stream.set_color(&key_spec);
@@ -88,30 +113,31 @@ pub fn phase_detail(key: &str, value: &str) {
 
 /// Print a success message: ✓ msg in green+bold.
 pub fn info(msg: &str) {
-    write_styled(
-        Some(Color::Green),
-        true,
-        false,
-        &format!("\u{2713} {}", msg),
-    );
-    let _ = writeln!(stderr());
+    let mut stream = locked_stderr();
+    write_styled_to(&mut stream, Some(Color::Green), true, false, &format!("\u{2713} {}", msg));
+    let _ = writeln!(stream);
 }
 
 /// Print a warning: ▸ msg in yellow+bold.
 pub fn warn(msg: &str) {
-    write_styled(
-        Some(Color::Yellow),
-        true,
-        false,
-        &format!("\u{25b8} {}", msg),
-    );
-    let _ = writeln!(stderr());
+    let mut stream = locked_stderr();
+    write_styled_to(&mut stream, Some(Color::Yellow), true, false, &format!("\u{25b8} {}", msg));
+    let _ = writeln!(stream);
 }
 
 /// Print an error: ✗ msg in red+bold.
 pub fn err_msg(msg: &str) {
-    write_styled(Some(Color::Red), true, false, &format!("\u{2717} {}", msg));
-    let _ = writeln!(stderr());
+    let mut stream = locked_stderr();
+    write_styled_to(&mut stream, Some(Color::Red), true, false, &format!("\u{2717} {}", msg));
+    let _ = writeln!(stream);
+}
+
+fn write_styled_to(stream: &mut StandardStream, color: Option<Color>, bold: bool, dimmed: bool, text: &str) {
+    let mut spec = ColorSpec::new();
+    spec.set_fg(color).set_bold(bold).set_dimmed(dimmed);
+    let _ = stream.set_color(&spec);
+    let _ = write!(stream, "{}", text);
+    let _ = stream.reset();
 }
 
 pub fn write_dim(stream: &mut StandardStream, text: &str) {
@@ -123,7 +149,7 @@ pub fn write_dim(stream: &mut StandardStream, text: &str) {
 }
 
 pub fn show_block(title: &str, content: &str) {
-    let mut stream = stderr();
+    let mut stream = locked_stderr();
     let _ = writeln!(stream);
     write_dim(
         &mut stream,
@@ -140,7 +166,7 @@ pub fn show_block(title: &str, content: &str) {
 }
 
 pub fn show_markdown(title: &str, md: &str) {
-    let mut stream = stderr();
+    let mut stream = locked_stderr();
     let _ = writeln!(stream);
     write_dim(
         &mut stream,
@@ -159,7 +185,7 @@ pub fn show_markdown(title: &str, md: &str) {
 }
 
 pub fn prompt_multiline(msg: &str) -> String {
-    let mut stream = stderr();
+    let mut stream = StandardStream::stderr(ColorChoice::Auto);
     let mut spec = ColorSpec::new();
     spec.set_fg(Some(Color::Yellow)).set_bold(true);
     let _ = stream.set_color(&spec);
@@ -188,7 +214,7 @@ pub fn prompt_multiline(msg: &str) -> String {
 
 pub fn prompt_choice(msg: &str, choices: &[&str]) -> String {
     loop {
-        let mut stream = stderr();
+        let mut stream = StandardStream::stderr(ColorChoice::Auto);
         // Question line
         let mut q_spec = ColorSpec::new();
         q_spec.set_fg(Some(Color::Yellow)).set_bold(true);
@@ -227,7 +253,7 @@ pub fn prompt_choice(msg: &str, choices: &[&str]) -> String {
 }
 
 pub fn prompt_line(msg: &str, hint: &str) -> String {
-    let mut stream = stderr();
+    let mut stream = StandardStream::stderr(ColorChoice::Auto);
     let mut spec = ColorSpec::new();
     spec.set_fg(Some(Color::Yellow)).set_bold(true);
     let _ = stream.set_color(&spec);
