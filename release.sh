@@ -6,6 +6,7 @@ if [ -n "$(git status --porcelain)" ]; then
   echo "Error: working tree is dirty — commit or stash changes first." >&2
   exit 1
 fi
+
 git push
 # Show current tags for reference
 latest=$(git tag --sort=-v:refname | head -n1)
@@ -22,9 +23,34 @@ fi
 # Strip the 'v' prefix for Cargo.toml
 cargo_version="${version#v}"
 
-# Update Cargo.toml version
-if ! sed -i '' "s/^version = \"[0-9]\+\.[0-9]\+\.[0-9]\+\"$/version = \"$cargo_version\"/" Cargo.toml 2>/dev/null; then
-  sed -i "s/^version = \"[0-9]\+\.[0-9]\+\.[0-9]\+\"$/version = \"$cargo_version\"/" Cargo.toml
+# Update Cargo.toml version in a POSIX-compatible, cross-platform way
+CargoTmp=$(mktemp)
+
+if ! awk -v new_version="$cargo_version" '
+  /^\[package\]/ { in_package = 1 }
+  in_package && /^\[/ && !/^\[package\]/ { in_package = 0 }
+
+  in_package && $0 ~ /^[[:space:]]*version[[:space:]]*=[[:space:]]*"[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*"[[:space:]]*$/ {
+    sub(/"[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*"/, "\"" new_version "\"", $0)
+    changed = 1
+  }
+
+  { print }
+  END {
+    if (!changed) {
+      exit 1
+    }
+  }
+' Cargo.toml > "$CargoTmp"; then
+  rm -f "$CargoTmp"
+  echo "Error: failed to update Cargo.toml version." >&2
+  exit 1
+fi
+
+if ! mv "$CargoTmp" Cargo.toml; then
+  rm -f "$CargoTmp"
+  echo "Error: failed to write Cargo.toml." >&2
+  exit 1
 fi
 
 # Commit the version bump
