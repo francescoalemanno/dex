@@ -138,19 +138,7 @@ fn compute_confidence(results: &[ResearchEntry], baseline: f64, direction: &str)
         return None;
     }
 
-    let best_kept = results
-        .iter()
-        .filter(|r| r.status == "keep" && r.metric > 0.0)
-        .map(|r| r.metric)
-        .reduce(|best, val| {
-            if is_better(val, best, direction) {
-                val
-            } else {
-                best
-            }
-        });
-
-    let best_kept = best_kept?;
+    let best_kept = last_kept_metric(results, direction)?;
     if best_kept == baseline {
         return None;
     }
@@ -203,10 +191,13 @@ fn format_delta_pct(current: f64, baseline: f64) -> String {
     format!("{}{:.1}", sign, pct)
 }
 
-fn format_confidence(conf: Option<f64>) -> String {
-    match conf {
-        Some(c) => format!("{:.1}×", c),
-        None => "N/A".to_string(),
+fn confidence_label(conf: f64) -> &'static str {
+    if conf >= 2.0 {
+        "likely real"
+    } else if conf >= 1.0 {
+        "marginal"
+    } else {
+        "within noise"
     }
 }
 
@@ -265,13 +256,6 @@ fn jsonl_path() -> String {
     dex_path("research.jsonl")
 }
 
-fn write_config_line(config: &ResearchConfig) -> Result<(), String> {
-    ensure_dex_dir();
-    let line = serde_json::to_string(config).map_err(|e| format!("serialize config: {}", e))?;
-    fs::write(jsonl_path(), format!("{}\n", line))
-        .map_err(|e| format!("write research.jsonl: {}", e))
-}
-
 fn append_result(entry: &ResearchEntry) -> Result<(), String> {
     use std::io::Write;
     let line = serde_json::to_string(entry).map_err(|e| format!("serialize result: {}", e))?;
@@ -315,42 +299,23 @@ fn load_state() -> Result<Option<ResearchState>, String> {
     }
 }
 
-fn capture_research_notes() -> Option<String> {
-    let path = dex_path("research-notes.md");
-    let content = fs::read_to_string(&path).ok()?;
-    let _ = fs::remove_file(&path);
-    let trimmed = content.trim().to_string();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed)
-    }
-}
-
-fn latest_notes(results: &[ResearchEntry]) -> Option<String> {
-    results.iter().rev().find_map(|r| r.notes.clone())
-}
-
 // ── Benchmark execution ──
-
-#[cfg(target_os = "windows")]
-fn shell_command(cmd_str: &str) -> std::process::Command {
-    let mut cmd = std::process::Command::new("cmd");
-    cmd.args(["/C", cmd_str]);
-    cmd
-}
-
-#[cfg(not(target_os = "windows"))]
-fn shell_command(cmd_str: &str) -> std::process::Command {
-    let mut cmd = std::process::Command::new("sh");
-    cmd.args(["-c", cmd_str]);
-    cmd
-}
 
 fn run_benchmark(command: &str, timeout: Duration) -> Result<BenchmarkOutcome, String> {
     let start = Instant::now();
 
-    let mut cmd = shell_command(command);
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.args(["/C", command]);
+        cmd
+    };
+    #[cfg(not(target_os = "windows"))]
+    let mut cmd = {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", command]);
+        cmd
+    };
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     let child = SharedChild::spawn(&mut cmd).map_err(|e| format!("spawn benchmark: {}", e))?;
@@ -416,14 +381,6 @@ fn extract_primary_metric(outcome: &BenchmarkOutcome, metric_name: &str) -> Opti
 
 // ── Git helpers ──
 
-fn git_head_short() -> Result<String, String> {
-    git_trimmed_output(&["rev-parse", "--short=7", "HEAD"])
-}
-
-fn git_head_message() -> Result<String, String> {
-    git_trimmed_output(&["log", "-1", "--format=%s"])
-}
-
 fn git_revert_to(sha: &str) -> Result<(), String> {
     git_trimmed_output(&["reset", "--hard", sha])?;
     git_trimmed_output(&["clean", "-fd"])?;
@@ -435,11 +392,6 @@ fn git_clean_working_tree() -> Result<(), String> {
     let pathspec = if toplevel.is_empty() { "." } else { &toplevel };
     git_trimmed_output(&["checkout", "--", pathspec])?;
     git_trimmed_output(&["clean", "-fd", pathspec])?;
-    Ok(())
-}
-
-fn git_create_branch(name: &str) -> Result<(), String> {
-    git_trimmed_output(&["checkout", "-b", name])?;
     Ok(())
 }
 
@@ -465,17 +417,6 @@ fn slugify(text: &str) -> String {
     } else {
         joined
     }
-}
-
-fn today_stamp() -> String {
-    let secs = now_timestamp();
-    let days = secs / 86400;
-    let y = 1970 + (days * 400 / 146097);
-    let remaining =
-        days - ((y - 1970) * 365 + (y - 1970) / 4 - (y - 1970) / 100 + (y - 1970) / 400);
-    let m = remaining / 30 + 1;
-    let d = remaining % 30 + 1;
-    format!("{:04}-{:02}-{:02}", y, m.min(12), d.min(31))
 }
 
 // ── Interactive setup ──
@@ -554,17 +495,7 @@ pub fn research_status() -> Result<(), String> {
         &format!("{}{}", format_metric(baseline), config.metric_unit),
     );
 
-    let best_kept = results
-        .iter()
-        .filter(|r| r.status == "keep" && r.metric > 0.0)
-        .map(|r| r.metric)
-        .reduce(|best, val| {
-            if is_better(val, best, &config.direction) {
-                val
-            } else {
-                best
-            }
-        });
+    let best_kept = last_kept_metric(results, &config.direction);
 
     if let Some(best) = best_kept {
         if best != baseline {
@@ -582,14 +513,10 @@ pub fn research_status() -> Result<(), String> {
 
     let conf = compute_confidence(results, baseline, &config.direction);
     if let Some(c) = conf {
-        let label = if c >= 2.0 {
-            "likely real"
-        } else if c >= 1.0 {
-            "marginal"
-        } else {
-            "within noise"
-        };
-        phase_detail("confidence", &format!("{:.1}× ({})", c, label));
+        phase_detail(
+            "confidence",
+            &format!("{:.1}× ({})", c, confidence_label(c)),
+        );
     }
 
     let kept = results.iter().filter(|r| r.status == "keep").count();
@@ -651,11 +578,17 @@ pub fn research_new(
         &format!("{} ({} is better)", config.metric_name, config.direction),
     );
 
-    let branch_name = format!("research/{}-{}", slugify(&config.goal), today_stamp());
-    git_create_branch(&branch_name)?;
+    let branch_name = format!("research/{}-{}", slugify(&config.goal), now_timestamp());
+    git_trimmed_output(&["checkout", "-b", &branch_name])?;
     info(&format!("Branch: {}", branch_name));
 
-    write_config_line(&config)?;
+    {
+        ensure_dex_dir();
+        let line =
+            serde_json::to_string(&config).map_err(|e| format!("serialize config: {}", e))?;
+        fs::write(jsonl_path(), format!("{}\n", line))
+            .map_err(|e| format!("write research.jsonl: {}", e))?;
+    }
 
     info("Running baseline benchmark...");
     let outcome = run_benchmark(&config.command, Duration::from_secs(BENCHMARK_TIMEOUT_SECS))?;
@@ -675,7 +608,8 @@ pub fn research_new(
         config.metric_name
     ))?;
 
-    let commit = git_head_short().unwrap_or_else(|_| "0000000".to_string());
+    let commit = git_trimmed_output(&["rev-parse", "--short=7", "HEAD"])
+        .unwrap_or_else(|_| "0000000".to_string());
 
     let baseline_entry = ResearchEntry {
         run: 1,
@@ -773,23 +707,16 @@ fn research_loop(
             phase_detail("iteration", &format!("{}", iteration));
         }
 
-        let reference_metric =
-            last_kept_metric(&state.results, &config.direction).unwrap_or(baseline);
-
+        let best_metric =
+            last_kept_metric(&state.results, &config.direction).filter(|&best| best != baseline);
+        let reference_metric = best_metric.unwrap_or(baseline);
         let confidence = compute_confidence(&state.results, baseline, &config.direction);
-
         let recent_history = build_recent_history(&state.results, &config.metric_unit);
         let dead_ends = build_dead_ends(&state.results);
-
-        let best_metric_str = last_kept_metric(&state.results, &config.direction)
-            .filter(|&b| b != baseline)
-            .map(|b| format!("{}{}", format_metric(b), config.metric_unit));
-
-        let delta_pct_str = last_kept_metric(&state.results, &config.direction)
-            .filter(|&b| b != baseline)
-            .map(|b| format_delta_pct(b, baseline));
-
-        let research_notes = latest_notes(&state.results);
+        let best_metric_str =
+            best_metric.map(|best| format!("{}{}", format_metric(best), config.metric_unit));
+        let delta_pct_str = best_metric.map(|best| format_delta_pct(best, baseline));
+        let research_notes = state.results.iter().rev().find_map(|r| r.notes.clone());
 
         let prompt = render_prompt(
             "research.txt",
@@ -801,7 +728,9 @@ fn research_loop(
                 "Baseline": format!("{}{}", format_metric(baseline), config.metric_unit),
                 "BestMetric": best_metric_str,
                 "DeltaPct": delta_pct_str,
-                "Confidence": format_confidence(confidence),
+                "Confidence": confidence
+                    .map(|c| format!("{:.1}×", c))
+                    .unwrap_or_else(|| "N/A".to_string()),
                 "Iteration": iteration,
                 "MaxIterations": max_iterations,
                 "RecentHistory": if recent_history.is_empty() { None } else { Some(recent_history) },
@@ -838,7 +767,14 @@ fn research_loop(
         }
 
         // Capture research notes before cleaning (agent wrote them outside git)
-        let notes = capture_research_notes();
+        let notes = {
+            let path = dex_path("research-notes.md");
+            fs::read_to_string(&path).ok().and_then(|content| {
+                let _ = fs::remove_file(&path);
+                let trimmed = content.trim().to_string();
+                (!trimmed.is_empty()).then_some(trimmed)
+            })
+        };
 
         // Clean working tree so benchmark runs against committed state
         let _ = git_clean_working_tree();
@@ -849,59 +785,67 @@ fn research_loop(
             continue;
         }
 
-        let commit_sha = git_head_short().unwrap_or_else(|_| "???????".to_string());
-        let commit_msg = git_head_message().unwrap_or_else(|_| "(no message)".to_string());
+        let commit_sha = git_trimmed_output(&["rev-parse", "--short=7", "HEAD"])
+            .unwrap_or_else(|_| "???????".to_string());
+        let commit_msg = git_trimmed_output(&["log", "-1", "--format=%s"])
+            .unwrap_or_else(|_| "(no message)".to_string());
         let description = commit_msg
             .trim_start_matches("research:")
             .trim_start_matches("research ")
             .trim()
             .to_string();
+        macro_rules! record_result {
+            ($revert:expr, $metric:expr, $status:expr, $description:expr, $confidence:expr) => {{
+                if $revert {
+                    let _ = git_revert_to(&head_before);
+                }
+                let entry = ResearchEntry {
+                    run: state.results.len() + 1,
+                    commit: commit_sha.clone(),
+                    metric: $metric,
+                    status: $status.to_string(),
+                    description: $description,
+                    timestamp: now_timestamp(),
+                    confidence: $confidence,
+                    notes: notes.clone(),
+                };
+                append_result(&entry)?;
+                state.results.push(entry);
+            }};
+        }
 
         phase_detail("benchmark", &format!("running {}...", config.command));
         let outcome =
             match run_benchmark(&config.command, Duration::from_secs(BENCHMARK_TIMEOUT_SECS)) {
-                Ok(o) => o,
+                Ok(o) if !o.timed_out && o.exit_code == Some(0) => o,
+                Ok(o) => {
+                    let reason = if o.timed_out {
+                        "timeout"
+                    } else {
+                        "benchmark failed"
+                    };
+                    warn(&format!("Benchmark {}: reverting.", reason));
+                    record_result!(
+                        true,
+                        0.0,
+                        "crash",
+                        format!("{} ({})", description, reason),
+                        None
+                    );
+                    continue;
+                }
                 Err(e) => {
                     err_msg(&format!("Benchmark spawn error: {}", e));
-                    let _ = git_revert_to(&head_before);
-                    let entry = ResearchEntry {
-                        run: state.results.len() + 1,
-                        commit: commit_sha,
-                        metric: 0.0,
-                        status: "crash".to_string(),
-                        description: format!("{} (spawn error)", description),
-                        timestamp: now_timestamp(),
-                        confidence: None,
-                        notes: notes.clone(),
-                    };
-                    append_result(&entry)?;
-                    state.results.push(entry);
+                    record_result!(
+                        true,
+                        0.0,
+                        "crash",
+                        format!("{} (spawn error)", description),
+                        None
+                    );
                     continue;
                 }
             };
-
-        if outcome.timed_out || outcome.exit_code != Some(0) {
-            let reason = if outcome.timed_out {
-                "timeout"
-            } else {
-                "benchmark failed"
-            };
-            warn(&format!("Benchmark {}: reverting.", reason));
-            let _ = git_revert_to(&head_before);
-            let entry = ResearchEntry {
-                run: state.results.len() + 1,
-                commit: commit_sha,
-                metric: 0.0,
-                status: "crash".to_string(),
-                description: format!("{} ({})", description, reason),
-                timestamp: now_timestamp(),
-                confidence: None,
-                notes: notes.clone(),
-            };
-            append_result(&entry)?;
-            state.results.push(entry);
-            continue;
-        }
 
         let primary = match extract_primary_metric(&outcome, &config.metric_name) {
             Some(v) => v,
@@ -910,19 +854,13 @@ fn research_loop(
                     "No METRIC line for {:?} in output: reverting.",
                     config.metric_name
                 ));
-                let _ = git_revert_to(&head_before);
-                let entry = ResearchEntry {
-                    run: state.results.len() + 1,
-                    commit: commit_sha,
-                    metric: 0.0,
-                    status: "crash".to_string(),
-                    description: format!("{} (metric not found)", description),
-                    timestamp: now_timestamp(),
-                    confidence: None,
-                    notes: notes.clone(),
-                };
-                append_result(&entry)?;
-                state.results.push(entry);
+                record_result!(
+                    true,
+                    0.0,
+                    "crash",
+                    format!("{} (metric not found)", description),
+                    None
+                );
                 continue;
             }
         };
@@ -934,39 +872,26 @@ fn research_loop(
                 Ok(check_outcome) => {
                     if check_outcome.exit_code != Some(0) || check_outcome.timed_out {
                         warn("Checks failed: reverting.");
-                        let _ = git_revert_to(&head_before);
-                        let conf = compute_confidence(&state.results, baseline, &config.direction);
-                        let entry = ResearchEntry {
-                            run: state.results.len() + 1,
-                            commit: commit_sha,
-                            metric: primary,
-                            status: "checks_failed".to_string(),
-                            description: format!("{} (checks failed)", description),
-                            timestamp: now_timestamp(),
-                            confidence: conf,
-                            notes: notes.clone(),
-                        };
-                        append_result(&entry)?;
-                        state.results.push(entry);
+                        record_result!(
+                            true,
+                            primary,
+                            "checks_failed",
+                            format!("{} (checks failed)", description),
+                            confidence
+                        );
                         continue;
                     }
                     info("Checks passed.");
                 }
                 Err(e) => {
                     warn(&format!("Checks error: {}", e));
-                    let _ = git_revert_to(&head_before);
-                    let entry = ResearchEntry {
-                        run: state.results.len() + 1,
-                        commit: commit_sha,
-                        metric: primary,
-                        status: "checks_failed".to_string(),
-                        description: format!("{} (checks error)", description),
-                        timestamp: now_timestamp(),
-                        confidence: None,
-                        notes: notes.clone(),
-                    };
-                    append_result(&entry)?;
-                    state.results.push(entry);
+                    record_result!(
+                        true,
+                        primary,
+                        "checks_failed",
+                        format!("{} (checks error)", description),
+                        None
+                    );
                     continue;
                 }
             }
@@ -974,56 +899,35 @@ fn research_loop(
 
         // Decide: keep or discard
         let improved = is_better(primary, reference_metric, &config.direction);
-        let status = if improved { "keep" } else { "discard" };
-
-        if !improved {
-            let _ = git_revert_to(&head_before);
-        }
-
-        let conf = compute_confidence(&state.results, baseline, &config.direction);
-        let entry = ResearchEntry {
-            run: state.results.len() + 1,
-            commit: commit_sha.clone(),
-            metric: primary,
-            status: status.to_string(),
-            description: description.clone(),
-            timestamp: now_timestamp(),
-            confidence: conf,
-            notes,
-        };
-        append_result(&entry)?;
-        state.results.push(entry);
+        record_result!(
+            !improved,
+            primary,
+            if improved { "keep" } else { "discard" },
+            description.clone(),
+            confidence
+        );
 
         let delta = format_delta_pct(primary, baseline);
         let metric_str = format!("{}{}", format_metric(primary), config.metric_unit);
-
+        let summary = format!(
+            "#{} {} — {} ({}% from baseline) — {}",
+            state.results.len(),
+            if improved { "KEEP" } else { "DISCARD" },
+            metric_str,
+            delta,
+            description
+        );
         if improved {
-            info(&format!(
-                "#{} KEEP — {} ({}% from baseline) — {}",
-                state.results.len(),
-                metric_str,
-                delta,
-                description
-            ));
+            info(&summary)
         } else {
-            warn(&format!(
-                "#{} DISCARD — {} ({}% from baseline) — {}",
-                state.results.len(),
-                metric_str,
-                delta,
-                description
-            ));
+            warn(&summary)
         }
 
-        if let Some(c) = conf {
-            let label = if c >= 2.0 {
-                "likely real"
-            } else if c >= 1.0 {
-                "marginal"
-            } else {
-                "within noise"
-            };
-            phase_detail("confidence", &format!("{:.1}× ({})", c, label));
+        if let Some(c) = confidence {
+            phase_detail(
+                "confidence",
+                &format!("{:.1}× ({})", c, confidence_label(c)),
+            );
         }
     }
 
@@ -1036,76 +940,93 @@ fn research_loop(
 mod tests {
     use super::*;
 
-    #[test]
-    fn parse_metric_lines_basic() {
-        let output = "some output\nMETRIC total_us=15200\nMETRIC compile_us=4200\nother\n";
-        let metrics = parse_metric_lines(output);
-        assert_eq!(metrics.len(), 2);
-        assert_eq!(metrics[0], ("total_us".to_string(), 15200.0));
-        assert_eq!(metrics[1], ("compile_us".to_string(), 4200.0));
+    fn entry(
+        run: usize,
+        commit: &str,
+        metric: f64,
+        status: &str,
+        description: &str,
+    ) -> ResearchEntry {
+        ResearchEntry {
+            run,
+            commit: commit.into(),
+            metric,
+            status: status.into(),
+            description: description.into(),
+            timestamp: 0,
+            confidence: None,
+            notes: None,
+        }
     }
 
     #[test]
-    fn parse_metric_lines_last_wins() {
-        let output = "METRIC x=100\nMETRIC x=200\n";
-        let metrics = parse_metric_lines(output);
-        assert_eq!(metrics.len(), 1);
-        assert_eq!(metrics[0].1, 200.0);
+    fn parse_metric_lines_cases() {
+        for (output, expected) in [
+            (
+                "some output\nMETRIC total_us=15200\nMETRIC compile_us=4200\nother\n",
+                vec![
+                    ("total_us".to_string(), 15200.0),
+                    ("compile_us".to_string(), 4200.0),
+                ],
+            ),
+            (
+                "METRIC x=100\nMETRIC x=200\n",
+                vec![("x".to_string(), 200.0)],
+            ),
+            (
+                "METRIC a=NaN\nMETRIC b=inf\nMETRIC c=42\n",
+                vec![("c".to_string(), 42.0)],
+            ),
+        ] {
+            assert_eq!(parse_metric_lines(output), expected);
+        }
     }
 
     #[test]
-    fn parse_metric_lines_rejects_nan_inf() {
-        let output = "METRIC a=NaN\nMETRIC b=inf\nMETRIC c=42\n";
-        let metrics = parse_metric_lines(output);
-        assert_eq!(metrics.len(), 1);
-        assert_eq!(metrics[0], ("c".to_string(), 42.0));
+    fn is_better_cases() {
+        for (current, reference, direction, expected) in [
+            (90.0, 100.0, "lower", true),
+            (110.0, 100.0, "lower", false),
+            (110.0, 100.0, "higher", true),
+            (90.0, 100.0, "higher", false),
+        ] {
+            assert_eq!(is_better(current, reference, direction), expected);
+        }
     }
 
     #[test]
-    fn is_better_lower() {
-        assert!(is_better(90.0, 100.0, "lower"));
-        assert!(!is_better(110.0, 100.0, "lower"));
+    fn format_metric_cases() {
+        for (value, expected) in [
+            (15200.0, "15,200"),
+            (0.0, "0"),
+            (999.0, "999"),
+            (1000.0, "1,000"),
+            (15.23, "15.23"),
+            (1234.5, "1,234.50"),
+        ] {
+            assert_eq!(format_metric(value), expected);
+        }
     }
 
     #[test]
-    fn is_better_higher() {
-        assert!(is_better(110.0, 100.0, "higher"));
-        assert!(!is_better(90.0, 100.0, "higher"));
+    fn format_delta_pct_cases() {
+        for (current, baseline, expected) in [
+            (90.0, 100.0, "-10.0"),
+            (120.0, 100.0, "+20.0"),
+            (42.0, 0.0, "N/A"),
+        ] {
+            assert_eq!(format_delta_pct(current, baseline), expected);
+        }
     }
 
     #[test]
-    fn format_metric_integer() {
-        assert_eq!(format_metric(15200.0), "15,200");
-        assert_eq!(format_metric(0.0), "0");
-        assert_eq!(format_metric(999.0), "999");
-        assert_eq!(format_metric(1000.0), "1,000");
-    }
-
-    #[test]
-    fn format_metric_float() {
-        assert_eq!(format_metric(15.23), "15.23");
-        assert_eq!(format_metric(1234.5), "1,234.50");
-    }
-
-    #[test]
-    fn format_delta_pct_basic() {
-        assert_eq!(format_delta_pct(90.0, 100.0), "-10.0");
-        assert_eq!(format_delta_pct(120.0, 100.0), "+20.0");
-    }
-
-    #[test]
-    fn format_delta_pct_zero_baseline() {
-        assert_eq!(format_delta_pct(42.0, 0.0), "N/A");
-    }
-
-    #[test]
-    fn sorted_median_odd() {
-        assert_eq!(sorted_median(&[3.0, 1.0, 2.0]), 2.0);
-    }
-
-    #[test]
-    fn sorted_median_even() {
-        assert_eq!(sorted_median(&[1.0, 2.0, 3.0, 4.0]), 2.5);
+    fn sorted_median_cases() {
+        for (values, expected) in [
+            (&[3.0, 1.0, 2.0][..], 2.0),
+            (&[1.0, 2.0, 3.0, 4.0][..], 2.5),
+        ] {
+            assert_eq!(sorted_median(values), expected);
+        }
     }
 
     #[test]
@@ -1117,26 +1038,8 @@ mod tests {
     #[test]
     fn confidence_insufficient_data() {
         let results = vec![
-            ResearchEntry {
-                run: 1,
-                commit: "a".into(),
-                metric: 100.0,
-                status: "keep".into(),
-                description: "baseline".into(),
-                timestamp: 0,
-                confidence: None,
-                notes: None,
-            },
-            ResearchEntry {
-                run: 2,
-                commit: "b".into(),
-                metric: 95.0,
-                status: "keep".into(),
-                description: "opt".into(),
-                timestamp: 0,
-                confidence: None,
-                notes: None,
-            },
+            entry(1, "a", 100.0, "keep", "baseline"),
+            entry(2, "b", 95.0, "keep", "opt"),
         ];
         assert!(compute_confidence(&results, 100.0, "lower").is_none());
     }
@@ -1144,46 +1047,10 @@ mod tests {
     #[test]
     fn confidence_with_data() {
         let results = vec![
-            ResearchEntry {
-                run: 1,
-                commit: "a".into(),
-                metric: 100.0,
-                status: "keep".into(),
-                description: "baseline".into(),
-                timestamp: 0,
-                confidence: None,
-                notes: None,
-            },
-            ResearchEntry {
-                run: 2,
-                commit: "b".into(),
-                metric: 95.0,
-                status: "keep".into(),
-                description: "opt1".into(),
-                timestamp: 0,
-                confidence: None,
-                notes: None,
-            },
-            ResearchEntry {
-                run: 3,
-                commit: "c".into(),
-                metric: 98.0,
-                status: "discard".into(),
-                description: "opt2".into(),
-                timestamp: 0,
-                confidence: None,
-                notes: None,
-            },
-            ResearchEntry {
-                run: 4,
-                commit: "d".into(),
-                metric: 90.0,
-                status: "keep".into(),
-                description: "opt3".into(),
-                timestamp: 0,
-                confidence: None,
-                notes: None,
-            },
+            entry(1, "a", 100.0, "keep", "baseline"),
+            entry(2, "b", 95.0, "keep", "opt1"),
+            entry(3, "c", 98.0, "discard", "opt2"),
+            entry(4, "d", 90.0, "keep", "opt3"),
         ];
         let conf = compute_confidence(&results, 100.0, "lower");
         assert!(conf.is_some());
