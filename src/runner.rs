@@ -7,6 +7,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 use termcolor::StandardStream;
 
+use crate::core::{CliConfig, Config, OutputFormat};
 use crate::ui::{err_msg, locked_stderr, phase_detail, show_block, warn, write_timestamp};
 
 static VERBOSE: AtomicBool = AtomicBool::new(false);
@@ -44,130 +45,38 @@ pub fn kill_all_children() {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OutputFormat {
-    Plain,
-    JsonND,
-    PiJsonND,
-}
-
-pub struct CLIConfig {
-    pub cmd: &'static str,
-    pub args: &'static [&'static str],
-    pub stdin: bool,
-    pub env: &'static [(&'static str, &'static str)],
-    pub output_format: OutputFormat,
-}
-
-pub static CLI_CONFIGS: &[(&str, CLIConfig)] = &[
-    (
-        "opencode",
-        CLIConfig {
-            cmd: "opencode",
-            args: &["run", "--thinking", "--format", "json"],
-            stdin: true,
-            env: &[(
-                "OPENCODE_CONFIG_CONTENT",
-                r#"{"$schema":"https://opencode.ai/config.json","permission":"allow","lsp":false}"#,
-            )],
-            output_format: OutputFormat::JsonND,
-        },
-    ),
-    (
-        "codex",
-        CLIConfig {
-            cmd: "codex",
-            args: &["exec", "--yolo", "--ephemeral", "--json"],
-            stdin: true,
-            env: &[],
-            output_format: OutputFormat::JsonND,
-        },
-    ),
-    (
-        "claude",
-        CLIConfig {
-            cmd: "claude",
-            args: &[
-                "--dangerously-skip-permissions",
-                "--allow-dangerously-skip-permissions",
-                "-p",
-            ],
-            stdin: false,
-            env: &[],
-            output_format: OutputFormat::Plain,
-        },
-    ),
-    (
-        "droid",
-        CLIConfig {
-            cmd: "droid",
-            args: &["exec", "--skip-permissions-unsafe"],
-            stdin: false,
-            env: &[],
-            output_format: OutputFormat::Plain,
-        },
-    ),
-    (
-        "gemini",
-        CLIConfig {
-            cmd: "gemini",
-            args: &["-y", "-p"],
-            stdin: false,
-            env: &[],
-            output_format: OutputFormat::Plain,
-        },
-    ),
-    (
-        "pi",
-        CLIConfig {
-            cmd: "pi",
-            args: &["--no-session", "-p", "--mode", "json"],
-            stdin: false,
-            env: &[],
-            output_format: OutputFormat::PiJsonND,
-        },
-    ),
-    (
-        "raijin",
-        CLIConfig {
-            cmd: "raijin",
-            args: &["-ephemeral", "-no-echo", "-no-thinking"],
-            stdin: false,
-            env: &[],
-            output_format: OutputFormat::Plain,
-        },
-    ),
-];
-
-pub fn dex_available_agents() -> Vec<&'static str> {
-    CLI_CONFIGS
+pub fn dex_available_agents(config: &Config) -> Vec<String> {
+    config
+        .clis
         .iter()
-        .filter_map(|(name, config)| which::which(config.cmd).is_ok().then_some(*name))
+        .filter_map(|(name, cli)| which::which(&cli.command).is_ok().then_some(name.clone()))
         .collect()
 }
 
-pub fn validate_cli_name(name: &str) -> Result<(), String> {
-    let known = CLI_CONFIGS.iter().any(|(k, _)| *k == name);
-    if !known {
-        let all_names: Vec<&str> = CLI_CONFIGS.iter().map(|(k, _)| *k).collect();
-        return Err(format!(
-            "unknown CLI {:?}; supported agents: {}",
-            name,
-            all_names.join(", ")
-        ));
-    }
-    let cfg = &CLI_CONFIGS.iter().find(|(k, _)| *k == name).unwrap().1;
-    if which::which(cfg.cmd).is_err() {
+pub fn validate_cli_name(config: &Config, name: &str) -> Result<(), String> {
+    let configured: Vec<String> = config.clis.keys().cloned().collect();
+    let configured_list = if configured.is_empty() {
+        "none".to_string()
+    } else {
+        configured.join(", ")
+    };
+    let cfg = config.clis.get(name).ok_or_else(|| {
+        format!(
+            "unknown CLI {:?}; configured agents: {}",
+            name, configured_list
+        )
+    })?;
+    if which::which(&cfg.command).is_err() {
         return Err(format!(
             "CLI {:?} is not available in PATH (command {:?} not found)",
-            name, cfg.cmd
+            name, cfg.command
         ));
     }
     Ok(())
 }
 
 pub struct Runner {
-    config_idx: usize,
+    config: CliConfig,
     timeout: Duration,
     label: String,
 }
@@ -179,26 +88,27 @@ enum StreamLine {
 }
 
 impl Runner {
-    pub fn new(name: &str, timeout: Duration) -> Result<Self, String> {
-        validate_cli_name(name)?;
-        let idx = CLI_CONFIGS
-            .iter()
-            .position(|(k, _)| *k == name)
+    pub fn new(config: &Config, name: &str, timeout: Duration) -> Result<Self, String> {
+        validate_cli_name(config, name)?;
+        let cli = config
+            .clis
+            .get(name)
+            .cloned()
             .ok_or_else(|| format!("unknown CLI {:?}", name))?;
         Ok(Runner {
-            config_idx: idx,
+            config: cli,
             timeout,
             label: String::new(),
         })
     }
 
-    fn cfg(&self) -> &CLIConfig {
-        &CLI_CONFIGS[self.config_idx].1
+    fn cfg(&self) -> &CliConfig {
+        &self.config
     }
 
     pub fn labeled(&self, label: &str) -> Self {
         Runner {
-            config_idx: self.config_idx,
+            config: self.config.clone(),
             timeout: self.timeout,
             label: label.to_string(),
         }
@@ -235,26 +145,30 @@ impl Runner {
 
     fn run_once(&self, prompt: &str) -> Result<(), String> {
         let cfg = self.cfg();
-        let mut args: Vec<&str> = cfg.args.to_vec();
+        let mut args = cfg.args.clone();
         if !cfg.stdin {
-            args.push(prompt);
+            args.push(prompt.to_string());
         }
 
         // Show the exec command (without the prompt argument for readability)
-        let display_args: Vec<&str> = cfg.args.to_vec();
-        phase_detail("exec", &format!("{} {}", cfg.cmd, display_args.join(" ")));
+        let display = if cfg.args.is_empty() {
+            cfg.command.clone()
+        } else {
+            format!("{} {}", cfg.command, cfg.args.join(" "))
+        };
+        phase_detail("exec", &display);
 
         if is_verbose() {
             show_block("Prompt", prompt);
         }
 
-        let mut cmd = Command::new(cfg.cmd);
+        let mut cmd = Command::new(&cfg.command);
         cmd.args(&args);
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
         if !cfg.env.is_empty() {
-            for (k, v) in cfg.env {
+            for (k, v) in &cfg.env {
                 cmd.env(k, v);
             }
         }
@@ -266,7 +180,7 @@ impl Runner {
         }
 
         let child =
-            SharedChild::spawn(&mut cmd).map_err(|e| format!("spawn {}: {}", cfg.cmd, e))?;
+            SharedChild::spawn(&mut cmd).map_err(|e| format!("spawn {}: {}", cfg.command, e))?;
         let child = Arc::new(child);
 
         track_child(&child);
@@ -383,8 +297,8 @@ fn write_prefix(stream: &mut StandardStream, start: Instant, label: &str) {
 fn process_stdout_line(text: &str, start: Instant, label: &str, format: OutputFormat) -> bool {
     match format {
         OutputFormat::Plain => display_plain(text, start, label),
-        OutputFormat::JsonND => display_jsonnd(text, start, label),
-        OutputFormat::PiJsonND => display_pi_jsonnd(text, start, label),
+        OutputFormat::JsonNd => display_jsonnd(text, start, label),
+        OutputFormat::PiJsonNd => display_pi_jsonnd(text, start, label),
     }
 }
 

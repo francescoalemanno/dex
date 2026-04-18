@@ -1,12 +1,14 @@
 use handlebars::Handlebars;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
 const DEX_DIR: &str = ".dex";
 const DEX_PROMPTS_DIR: &str = ".dex/prompts";
+const DEX_CONFIG_DIR: &str = "dex";
 const BUILTIN_REVIEWERS: &str = include_str!("../prompts/reviewers.json");
 const IMPL_COMMITS_FILE: &str = "impl_commits.jsonl";
 
@@ -106,6 +108,34 @@ pub fn dex_path(name: &str) -> String {
         .to_string()
 }
 
+fn user_config_root() -> PathBuf {
+    if let Some(path) = std::env::var_os("XDG_CONFIG_HOME") {
+        return PathBuf::from(path);
+    }
+    if cfg!(windows) {
+        if let Some(path) = std::env::var_os("APPDATA") {
+            return PathBuf::from(path);
+        }
+        if let Some(path) = std::env::var_os("USERPROFILE") {
+            return PathBuf::from(path).join("AppData").join("Roaming");
+        }
+    }
+    if let Some(path) = std::env::var_os("HOME") {
+        return PathBuf::from(path).join(".config");
+    }
+    PathBuf::from(".config")
+}
+
+fn dex_config_path() -> PathBuf {
+    user_config_root().join(DEX_CONFIG_DIR).join("config.json")
+}
+
+fn ensure_config_dir() {
+    if let Some(parent) = dex_config_path().parent() {
+        fs::create_dir_all(parent).ok();
+    }
+}
+
 pub fn read_dex_file(name: &str) -> Option<String> {
     let path = dex_path(name);
     match fs::read_to_string(&path) {
@@ -168,31 +198,176 @@ pub fn reset_dex_runtime_artifacts() {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputFormat {
+    Plain,
+    JsonNd,
+    PiJsonNd,
+}
+
+fn default_output_format() -> OutputFormat {
+    OutputFormat::Plain
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CliConfig {
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub stdin: bool,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    #[serde(default = "default_output_format")]
+    pub output_format: OutputFormat,
+}
+
+fn cli_config(
+    command: &str,
+    args: &[&str],
+    stdin: bool,
+    env: &[(&str, &str)],
+    output_format: OutputFormat,
+) -> CliConfig {
+    let mut env_map = BTreeMap::new();
+    for (key, value) in env {
+        env_map.insert((*key).to_string(), (*value).to_string());
+    }
+    CliConfig {
+        command: command.to_string(),
+        args: args.iter().map(|arg| (*arg).to_string()).collect(),
+        stdin,
+        env: env_map,
+        output_format,
+    }
+}
+
+fn default_cli_name() -> String {
+    "opencode".to_string()
+}
+
+fn default_cli_configs() -> BTreeMap<String, CliConfig> {
+    let mut clis = BTreeMap::new();
+    clis.insert(
+        "claude".to_string(),
+        cli_config(
+            "claude",
+            &[
+                "--dangerously-skip-permissions",
+                "--allow-dangerously-skip-permissions",
+                "-p",
+            ],
+            false,
+            &[],
+            OutputFormat::Plain,
+        ),
+    );
+    clis.insert(
+        "codex".to_string(),
+        cli_config(
+            "codex",
+            &["exec", "--yolo", "--ephemeral", "--json"],
+            true,
+            &[],
+            OutputFormat::JsonNd,
+        ),
+    );
+    clis.insert(
+        "droid".to_string(),
+        cli_config(
+            "droid",
+            &["exec", "--skip-permissions-unsafe"],
+            false,
+            &[],
+            OutputFormat::Plain,
+        ),
+    );
+    clis.insert(
+        "gemini".to_string(),
+        cli_config("gemini", &["-y", "-p"], false, &[], OutputFormat::Plain),
+    );
+    clis.insert(
+        "opencode".to_string(),
+        cli_config(
+            "opencode",
+            &["run", "--thinking", "--format", "json"],
+            true,
+            &[(
+                "OPENCODE_CONFIG_CONTENT",
+                r#"{"$schema":"https://opencode.ai/config.json","permission":"allow","lsp":false}"#,
+            )],
+            OutputFormat::JsonNd,
+        ),
+    );
+    clis.insert(
+        "pi".to_string(),
+        cli_config(
+            "pi",
+            &["--no-session", "-p", "--mode", "json"],
+            false,
+            &[],
+            OutputFormat::PiJsonNd,
+        ),
+    );
+    clis.insert(
+        "raijin".to_string(),
+        cli_config(
+            "raijin",
+            &["-ephemeral", "-no-echo", "-no-thinking"],
+            false,
+            &[],
+            OutputFormat::Plain,
+        ),
+    );
+    clis
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
+    #[serde(default = "default_cli_name")]
     pub cli: String,
+    #[serde(default = "default_cli_configs")]
+    pub clis: BTreeMap<String, CliConfig>,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Config {
-            cli: "opencode".to_string(),
+            cli: default_cli_name(),
+            clis: default_cli_configs(),
         }
     }
 }
 
+pub fn ensure_config() {
+    let path = dex_config_path();
+    if path.exists() {
+        return;
+    }
+    save_config(&Config::default());
+}
+
 pub fn load_config() -> Config {
-    let path = dex_path("config.json");
+    let path = dex_config_path();
     match fs::read_to_string(&path) {
-        Ok(data) => serde_json::from_str(&data).unwrap_or_default(),
+        Ok(data) => {
+            let parsed: Config = serde_json::from_str(&data).unwrap_or_default();
+            let mut merged = Config::default();
+            if !parsed.cli.trim().is_empty() {
+                merged.cli = parsed.cli;
+            }
+            merged.clis.extend(parsed.clis);
+            merged
+        }
         Err(_) => Config::default(),
     }
 }
 
 pub fn save_config(cfg: &Config) {
-    ensure_dex_dir();
+    ensure_config_dir();
     let data = serde_json::to_string_pretty(cfg).unwrap_or_default();
-    fs::write(dex_path("config.json"), format!("{}\n", data)).ok();
+    fs::write(dex_config_path(), format!("{}\n", data)).ok();
 }
 
 pub fn git_trimmed_output(args: &[&str]) -> Result<String, String> {
@@ -384,6 +559,7 @@ mod tests {
         let cfg: Config = serde_json::from_str(r#"{"cli":"claude","base_ref":"main"}"#).unwrap();
 
         assert_eq!(cfg.cli, "claude");
+        assert!(cfg.clis.contains_key("gemini"));
     }
 
     fn git(dir: &std::path::Path, args: &[&str]) -> String {

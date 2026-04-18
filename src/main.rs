@@ -13,9 +13,9 @@ use std::process::exit;
 use std::time::Duration;
 
 use crate::core::{
-    dex_path, ensure_dex_dir, git_trimmed_output, impl_commits_base_ref, load_config,
-    load_feedbacks, read_dex_file, require_git_repo, reset_dex_runtime_artifacts, save_config,
-    save_plan_request, seed_prompts, Config,
+    dex_path, ensure_config, ensure_dex_dir, git_trimmed_output, impl_commits_base_ref,
+    load_config, load_feedbacks, read_dex_file, require_git_repo, reset_dex_runtime_artifacts,
+    save_config, save_plan_request, seed_prompts, Config,
 };
 use crate::phases::{bare_phase, finalize_phase, impl_phase, plan_phase, review_phase};
 use crate::plan::validate_candidate_plan;
@@ -270,17 +270,30 @@ fn main() {
     }
 
     set_verbose(args.verbose);
+    ensure_config();
+    let mut config = load_config();
 
     if let Some(ref name) = args.cli {
-        if let Err(e) = crate::runner::validate_cli_name(name) {
+        if let Err(e) = crate::runner::validate_cli_name(&config, name) {
             err_msg(&e);
             exit(1);
         }
     }
 
+    let cli_name = resolve_cli(args.cli.clone(), &config);
+    let cli_changed = config.cli != cli_name;
+    if cli_changed {
+        config.cli = cli_name.clone();
+        save_config(&config);
+    }
+
     let command = match args.command {
         Some(cmd) => cmd,
         None => {
+            if args.cli.is_some() {
+                info(&format!("Default CLI set to {}.", config.cli));
+                return;
+            }
             print_help(&parsed.command_name);
             return;
         }
@@ -299,22 +312,16 @@ fn main() {
         exit(1);
     }
 
-    let cli_name = resolve_cli(args.cli);
-
     app_header();
 
     let timeout = Duration::from_secs(args.timeout);
-    let runner = match Runner::new(&cli_name, timeout) {
+    let runner = match Runner::new(&config, &cli_name, timeout) {
         Ok(r) => r,
         Err(e) => {
             err_msg(&e);
             exit(1);
         }
     };
-
-    save_config(&Config {
-        cli: cli_name.clone(),
-    });
 
     let result = match command {
         SubCommand::Plan(cmd) => cmd_plan(&runner, cmd),
@@ -577,17 +584,14 @@ fn read_text_or_file(words: Vec<String>, kind: &str) -> Result<String, CmdError>
     Ok(text)
 }
 
-fn resolve_cli(explicit: Option<String>) -> String {
-    if let Some(name) = explicit {
-        return name;
+fn resolve_cli(explicit: Option<String>, config: &Config) -> String {
+    let selected = explicit.unwrap_or_else(|| config.cli.clone());
+    let trimmed = selected.trim();
+    if trimmed.is_empty() {
+        Config::default().cli
+    } else {
+        trimmed.to_string()
     }
-    if Path::new(&dex_path("config.json")).exists() {
-        return load_config().cli;
-    }
-    if let Some(first) = crate::runner::dex_available_agents().first() {
-        return first.to_string();
-    }
-    Config::default().cli
 }
 
 // ── Arg parsing & help ──
@@ -621,7 +625,7 @@ fn parse_args() -> ParsedArgs {
                     "{}",
                     render_help_output_with(
                         &early_exit.output,
-                        &crate::runner::dex_available_agents(),
+                        &crate::runner::dex_available_agents(&load_config()),
                     )
                 );
                 0
@@ -646,7 +650,7 @@ fn print_help(command_name: &str) {
     let help = top_level_help_output(command_name);
     print!(
         "{}",
-        render_help_output_with(&help, &crate::runner::dex_available_agents(),)
+        render_help_output_with(&help, &crate::runner::dex_available_agents(&load_config()),)
     );
 }
 
@@ -667,7 +671,7 @@ fn base_command_name(path: &str) -> &str {
         .unwrap_or(path)
 }
 
-fn render_help_output_with(base_help: &str, available: &[&str]) -> String {
+fn render_help_output_with<S: AsRef<str>>(base_help: &str, available: &[S]) -> String {
     let mut output = String::with_capacity(base_help.len() + 64);
     output.push_str(base_help);
 
@@ -678,7 +682,7 @@ fn render_help_output_with(base_help: &str, available: &[&str]) -> String {
     output
 }
 
-fn available_agents_help_section_with(available: &[&str]) -> String {
+fn available_agents_help_section_with<S: AsRef<str>>(available: &[S]) -> String {
     let mut section = String::from("\nAvailable agents:\n");
     if available.is_empty() {
         section.push_str("  none found in PATH\n");
@@ -687,7 +691,7 @@ fn available_agents_help_section_with(available: &[&str]) -> String {
 
     for agent in available {
         section.push_str("  ");
-        section.push_str(agent);
+        section.push_str(agent.as_ref());
         section.push('\n');
     }
     section
@@ -726,7 +730,7 @@ mod tests {
     #[test]
     fn help_output_appends_available_agents_section() {
         assert_eq!(
-            render_help_output_with("Usage: dex", &[]),
+            render_help_output_with("Usage: dex", &[] as &[&str]),
             "Usage: dex\n\nAvailable agents:\n  none found in PATH\n"
         );
     }
@@ -734,7 +738,7 @@ mod tests {
     #[test]
     fn help_output_appends_available_agents_after_options() {
         assert_eq!(
-            render_help_output_with("Usage: dex\n\nOptions:\n  --help\n", &[]),
+            render_help_output_with("Usage: dex\n\nOptions:\n  --help\n", &[] as &[&str]),
             "Usage: dex\n\nOptions:\n  --help\n\nAvailable agents:\n  none found in PATH\n"
         );
     }
