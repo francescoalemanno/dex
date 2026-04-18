@@ -53,9 +53,16 @@ if ! mv "$CargoTmp" Cargo.toml; then
   exit 1
 fi
 
+# Refresh Cargo.lock so --locked CI runs succeed after release updates.
+if ! cargo generate-lockfile; then
+  echo "Error: failed to regenerate Cargo.lock." >&2
+  echo "Run \`cargo generate-lockfile\` manually and retry." >&2
+  exit 1
+fi
+
 # Commit the version bump
-if [ -n "$(git status --porcelain Cargo.toml)" ]; then
-  git add Cargo.toml
+if [ -n "$(git status --porcelain Cargo.toml Cargo.lock)" ]; then
+  git add Cargo.toml Cargo.lock
   git commit -m "chore: bump version to $cargo_version"
 fi
 
