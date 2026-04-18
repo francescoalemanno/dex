@@ -217,10 +217,7 @@ fn build_recent_history(results: &[ResearchEntry], metric_unit: &str) -> String 
         return String::new();
     }
 
-    let baseline = results
-        .first()
-        .filter(|r| r.metric > 0.0)
-        .map(|r| r.metric);
+    let baseline = results.first().filter(|r| r.metric > 0.0).map(|r| r.metric);
 
     let mut lines = Vec::new();
     for r in recent.iter().rev() {
@@ -304,8 +301,7 @@ fn load_state() -> Result<Option<ResearchState>, String> {
         let val: serde_json::Value =
             serde_json::from_str(line).map_err(|e| format!("parse jsonl line: {}", e))?;
         if val.get("type").and_then(|v| v.as_str()) == Some("config") {
-            config =
-                Some(serde_json::from_value(val).map_err(|e| format!("parse config: {}", e))?);
+            config = Some(serde_json::from_value(val).map_err(|e| format!("parse config: {}", e))?);
         } else {
             let entry: ResearchEntry =
                 serde_json::from_value(val).map_err(|e| format!("parse result: {}", e))?;
@@ -314,10 +310,7 @@ fn load_state() -> Result<Option<ResearchState>, String> {
     }
 
     match config {
-        Some(c) => Ok(Some(ResearchState {
-            config: c,
-            results,
-        })),
+        Some(c) => Ok(Some(ResearchState { config: c, results })),
         None => Ok(None),
     }
 }
@@ -335,10 +328,7 @@ fn capture_research_notes() -> Option<String> {
 }
 
 fn latest_notes(results: &[ResearchEntry]) -> Option<String> {
-    results
-        .iter()
-        .rev()
-        .find_map(|r| r.notes.clone())
+    results.iter().rev().find_map(|r| r.notes.clone())
 }
 
 // ── Benchmark execution ──
@@ -363,8 +353,7 @@ fn run_benchmark(command: &str, timeout: Duration) -> Result<BenchmarkOutcome, S
     let mut cmd = shell_command(command);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-    let child =
-        SharedChild::spawn(&mut cmd).map_err(|e| format!("spawn benchmark: {}", e))?;
+    let child = SharedChild::spawn(&mut cmd).map_err(|e| format!("spawn benchmark: {}", e))?;
     let child = Arc::new(child);
     track_child(&child);
 
@@ -482,7 +471,8 @@ fn today_stamp() -> String {
     let secs = now_timestamp();
     let days = secs / 86400;
     let y = 1970 + (days * 400 / 146097);
-    let remaining = days - ((y - 1970) * 365 + (y - 1970) / 4 - (y - 1970) / 100 + (y - 1970) / 400);
+    let remaining =
+        days - ((y - 1970) * 365 + (y - 1970) / 4 - (y - 1970) / 100 + (y - 1970) / 400);
     let m = remaining / 30 + 1;
     let d = remaining % 30 + 1;
     format!("{:04}-{:02}-{:02}", y, m.min(12), d.min(31))
@@ -658,10 +648,7 @@ pub fn research_new(
     phase_detail("command", &config.command);
     phase_detail(
         "metric",
-        &format!(
-            "{} ({} is better)",
-            config.metric_name, config.direction
-        ),
+        &format!("{} ({} is better)", config.metric_name, config.direction),
     );
 
     let branch_name = format!("research/{}-{}", slugify(&config.goal), today_stamp());
@@ -764,11 +751,7 @@ fn research_loop(
     max_iterations: Option<usize>,
 ) -> Result<(), String> {
     let config = state.config.clone();
-    let baseline = state
-        .results
-        .first()
-        .map(|r| r.metric)
-        .unwrap_or(0.0);
+    let baseline = state.results.first().map(|r| r.metric).unwrap_or(0.0);
 
     let starting_run = state.results.len();
     let mut consecutive_agent_failures: usize = 0;
@@ -952,8 +935,7 @@ fn research_loop(
                     if check_outcome.exit_code != Some(0) || check_outcome.timed_out {
                         warn("Checks failed: reverting.");
                         let _ = git_revert_to(&head_before);
-                        let conf =
-                            compute_confidence(&state.results, baseline, &config.direction);
+                        let conf = compute_confidence(&state.results, baseline, &config.direction);
                         let entry = ResearchEntry {
                             run: state.results.len() + 1,
                             commit: commit_sha,

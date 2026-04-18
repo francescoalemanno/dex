@@ -481,7 +481,8 @@ fn cmd_research(runner: &Runner, cmd: ResearchCmd) -> CmdResult {
             cmd.metric.unwrap_or_else(|| "duration_s".to_string()),
             String::new(),
             cmd.direction.unwrap_or_else(|| "lower".to_string()),
-            cmd.scope.unwrap_or_else(|| "(all project files)".to_string()),
+            cmd.scope
+                .unwrap_or_else(|| "(all project files)".to_string()),
             cmd.constraints.unwrap_or_default(),
             cmd.checks,
         )
