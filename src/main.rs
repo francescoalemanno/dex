@@ -14,8 +14,8 @@ use std::time::Duration;
 
 use crate::core::{
     dex_path, ensure_dex_dir, git_trimmed_output, impl_commits_base_ref, load_config,
-    load_feedbacks, read_dex_file, reset_dex_runtime_artifacts, save_config, save_plan_request,
-    seed_prompts, Config,
+    load_feedbacks, read_dex_file, require_git_repo, reset_dex_runtime_artifacts, save_config,
+    save_plan_request, seed_prompts, Config,
 };
 use crate::phases::{bare_phase, finalize_phase, impl_phase, plan_phase, review_phase};
 use crate::plan::validate_candidate_plan;
@@ -288,6 +288,11 @@ fn main() {
         seed_prompts(false);
     }
 
+    if let Err(e) = require_git_repo() {
+        err_msg(&e);
+        exit(1);
+    }
+
     let cli_name = resolve_cli(args.cli);
 
     app_header();
@@ -414,11 +419,6 @@ fn cmd_apply(runner: &Runner, _cmd: ApplyCmd) -> CmdResult {
         ));
     }
 
-    if git_trimmed_output(&["rev-parse", "--is-inside-work-tree"]).is_err() {
-        return Err(CmdError::Failure(
-            "apply requires a git repository. Please run from inside a git repo.".into(),
-        ));
-    }
     let status = git_trimmed_output(&["status", "--porcelain"])
         .map_err(|e| CmdError::Failure(format!("failed to check git status: {}", e)))?;
     if !status.is_empty() {

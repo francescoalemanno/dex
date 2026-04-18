@@ -4,14 +4,9 @@ The implementation plan is at `{{PlanPath}}`.
 
 ## Step 1: Get Branch Context
 
-{{#if GitAvailable}}
 Run these commands to understand what was done:
 - `git log {{BaseRef}}..HEAD --oneline` — see commit history
 - `git diff {{BaseRef}}...HEAD` — see actual code changes
-{{else}}
-Git metadata is unavailable in this workspace.
-Verify findings directly against the current source tree.
-{{/if}}
 
 ## Step 2: Review the Findings from All Reviewers
 
@@ -41,11 +36,7 @@ Do NOT reject issues just because they existed before this branch — fix them a
 ### 3.3 Fix All Confirmed Issues
 1. Fix all CONFIRMED issues (all types: bugs, tests, smells, simplifications, docs, etc.)
 2. Run tests and linter to verify fixes — ALL tests must pass, ALL linter issues resolved
-{{#if GitAvailable}}
 3. Commit fixes: `git commit -m "fix: address code review findings"`
-{{else}}
-3. Describe the changes in plain text instead of creating a git commit.
-{{/if}}
 
 Do NOT introduce new features or refactoring beyond what the confirmed issues require.
 

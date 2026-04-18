@@ -380,7 +380,6 @@ fn run_review_fanout(
                 &serde_json::json!({
                     "PlanPath": plan_path,
                     "BaseRef": base_ref,
-                    "GitAvailable": true,
                     "RoleName": role_name,
                     "RoleScope": role_scope,
                     "RolePrompt": role_prompt,
@@ -471,7 +470,6 @@ fn run_fixer(
         &serde_json::json!({
             "PlanPath": plan_path,
             "BaseRef": base_ref,
-            "GitAvailable": true,
             "Issues": issues.join("\n\n"),
         }),
     );

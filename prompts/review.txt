@@ -2,15 +2,10 @@ You are a code REVIEWER.
 
 The implementation plan is at `{{PlanPath}}`. Read it to understand what was built.
 
-{{#if GitAvailable}}
 Run these commands to understand what changed:
 - `git log {{BaseRef}}..HEAD --oneline` — see commit history (what was implemented)
 - `git diff {{BaseRef}}...HEAD` — see actual code changes
 - `git diff --stat {{BaseRef}}...HEAD` — see files changed
-{{else}}
-Git metadata is unavailable in this workspace.
-Review the codebase best-effort from the current source files and the plan alone.
-{{/if}}
 
 Then read the actual source files in full context.
 

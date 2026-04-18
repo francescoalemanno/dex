@@ -581,8 +581,6 @@ pub fn research_new(
     config: ResearchConfig,
     max_iterations: Option<usize>,
 ) -> Result<(), String> {
-    git_trimmed_output(&["rev-parse", "--is-inside-work-tree"])
-        .map_err(|_| "research requires a git repository".to_string())?;
     require_clean_worktree()?;
 
     banner("RESEARCH SETUP");
@@ -648,8 +646,6 @@ pub fn research_resume(runner: &Runner, max_iterations: Option<usize>) -> Result
     let (config, results) =
         load_state()?.ok_or("no research session found (missing .dex/research.jsonl)")?;
 
-    git_trimmed_output(&["rev-parse", "--is-inside-work-tree"])
-        .map_err(|_| "research requires a git repository".to_string())?;
     require_clean_worktree()?;
 
     banner("RESEARCH RESUME");

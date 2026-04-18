@@ -212,6 +212,13 @@ pub fn git_trimmed_output(args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// Verify the current directory is inside a git work tree.
+pub fn require_git_repo() -> Result<(), String> {
+    git_trimmed_output(&["rev-parse", "--is-inside-work-tree"])
+        .map_err(|_| "dex requires a git repository. Please run from inside a git repo.".to_string())?;
+    Ok(())
+}
+
 /// Return the current HEAD commit hash (short-circuit if not in a repo).
 pub fn git_head() -> Result<String, String> {
     git_trimmed_output(&["rev-parse", "HEAD"])
@@ -357,7 +364,6 @@ mod tests {
             "review.txt",
             &serde_json::json!({
                 "PlanPath": "custom-plan.md",
-                "GitAvailable": false,
                 "RoleName": "quality",
                 "RoleScope": "bugs",
                 "RolePrompt": "Focus on bugs.",
