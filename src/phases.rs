@@ -5,8 +5,8 @@ use std::process::Command;
 
 use crate::core::{
     append_impl_commits, dex_path, ensure_dex_dir, git_commits_between, git_head,
-    git_trimmed_output, impl_commit_history_summary, read_dex_file, remove_dex_file,
-    render_prompt, save_feedbacks, save_plan_request,
+    git_trimmed_output, impl_commit_history_summary, read_dex_file, remove_dex_file, render_prompt,
+    save_feedbacks, save_plan_request,
 };
 use crate::plan::{all_tasks_done, next_open_task, plan_step_counts};
 use crate::runner::Runner;
@@ -458,12 +458,7 @@ fn run_review_fanout(
     }
 }
 
-fn run_fixer(
-    r: &Runner,
-    plan_path: &str,
-    base_ref: &str,
-    issues: &[String],
-) -> Result<(), String> {
+fn run_fixer(r: &Runner, plan_path: &str, base_ref: &str, issues: &[String]) -> Result<(), String> {
     warn("Running fixer...");
     let fix_prompt = render_prompt(
         "fix.txt",

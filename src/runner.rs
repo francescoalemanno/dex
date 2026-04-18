@@ -110,7 +110,7 @@ pub static CLI_CONFIGS: &[(&str, CLIConfig)] = &[
         "pi",
         CLIConfig {
             cmd: "pi",
-            args: &["--no-session", "-p"],
+            args: &["--no-session", "-p", "--mode", "json"],
             stdin: false,
             env: &[],
             output_format: OutputFormat::PiJsonND,

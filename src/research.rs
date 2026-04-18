@@ -334,9 +334,7 @@ fn load_state() -> Result<Option<(ResearchConfig, Vec<ResearchEntry>)>, String> 
         if val.get("type").and_then(|v| v.as_str()) == Some("config") {
             config = Some(serde_json::from_value(val).map_err(|e| format!("parse config: {}", e))?);
         } else {
-            results.push(
-                serde_json::from_value(val).map_err(|e| format!("parse result: {}", e))?,
-            );
+            results.push(serde_json::from_value(val).map_err(|e| format!("parse result: {}", e))?);
         }
     }
     match config {
@@ -772,36 +770,53 @@ fn research_loop(
             .to_string();
 
         // Helper closure: record a result and optionally revert
-        let mut record = |revert: bool, metric: f64, status: &str, desc: String, conf: Option<f64>| {
-            if revert {
-                let _ = git_revert_to(&head_before);
-            }
-            let entry = ResearchEntry {
-                run: results.len() + 1,
-                commit: commit_sha.clone(),
-                metric,
-                status: status.to_string(),
-                description: desc,
-                timestamp: now_timestamp(),
-                confidence: conf,
+        let mut record =
+            |revert: bool, metric: f64, status: &str, desc: String, conf: Option<f64>| {
+                if revert {
+                    let _ = git_revert_to(&head_before);
+                }
+                let entry = ResearchEntry {
+                    run: results.len() + 1,
+                    commit: commit_sha.clone(),
+                    metric,
+                    status: status.to_string(),
+                    description: desc,
+                    timestamp: now_timestamp(),
+                    confidence: conf,
+                };
+                let _ = append_result(&entry);
+                results.push(entry);
             };
-            let _ = append_result(&entry);
-            results.push(entry);
-        };
 
         // ── Benchmark ──
         phase_detail("benchmark", &format!("running {}...", config.command));
         let outcome = match run_benchmark(&config.command, timeout) {
             Ok(o) if !o.timed_out && o.exit_code == Some(0) => o,
             Ok(o) => {
-                let reason = if o.timed_out { "timeout" } else { "benchmark failed" };
+                let reason = if o.timed_out {
+                    "timeout"
+                } else {
+                    "benchmark failed"
+                };
                 warn(&format!("Benchmark {}: reverting.", reason));
-                record(true, 0.0, "crash", format!("{} ({})", description, reason), None);
+                record(
+                    true,
+                    0.0,
+                    "crash",
+                    format!("{} ({})", description, reason),
+                    None,
+                );
                 continue;
             }
             Err(e) => {
                 err_msg(&format!("Benchmark spawn error: {}", e));
-                record(true, 0.0, "crash", format!("{} (spawn error)", description), None);
+                record(
+                    true,
+                    0.0,
+                    "crash",
+                    format!("{} (spawn error)", description),
+                    None,
+                );
                 continue;
             }
         };
@@ -813,7 +828,13 @@ fn research_loop(
                     "No METRIC line for {:?} in output: reverting.",
                     config.metric_name
                 ));
-                record(true, 0.0, "crash", format!("{} (metric not found)", description), None);
+                record(
+                    true,
+                    0.0,
+                    "crash",
+                    format!("{} (metric not found)", description),
+                    None,
+                );
                 continue;
             }
         };
@@ -827,12 +848,24 @@ fn research_loop(
                 }
                 Ok(_) => {
                     warn("Checks failed: reverting.");
-                    record(true, primary, "checks_failed", format!("{} (checks failed)", description), confidence);
+                    record(
+                        true,
+                        primary,
+                        "checks_failed",
+                        format!("{} (checks failed)", description),
+                        confidence,
+                    );
                     continue;
                 }
                 Err(e) => {
                     warn(&format!("Checks error: {}", e));
-                    record(true, primary, "checks_failed", format!("{} (checks error)", description), None);
+                    record(
+                        true,
+                        primary,
+                        "checks_failed",
+                        format!("{} (checks error)", description),
+                        None,
+                    );
                     continue;
                 }
             }

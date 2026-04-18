@@ -214,8 +214,9 @@ pub fn git_trimmed_output(args: &[&str]) -> Result<String, String> {
 
 /// Verify the current directory is inside a git work tree.
 pub fn require_git_repo() -> Result<(), String> {
-    git_trimmed_output(&["rev-parse", "--is-inside-work-tree"])
-        .map_err(|_| "dex requires a git repository. Please run from inside a git repo.".to_string())?;
+    git_trimmed_output(&["rev-parse", "--is-inside-work-tree"]).map_err(|_| {
+        "dex requires a git repository. Please run from inside a git repo.".to_string()
+    })?;
     Ok(())
 }
 
@@ -238,8 +239,7 @@ pub fn git_commits_between(before_ref: &str, head_ref: &str) -> Vec<ImplCommit> 
         return Vec::new();
     }
     let range = format!("{}..{}", before_ref, head_ref);
-    let Ok(log) =
-        git_trimmed_output(&["log", "--reverse", "--format=%H %P%n%B%x00", &range])
+    let Ok(log) = git_trimmed_output(&["log", "--reverse", "--format=%H %P%n%B%x00", &range])
     else {
         return Vec::new();
     };
