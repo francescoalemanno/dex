@@ -293,8 +293,7 @@ const MAX_FOCUSED_ROUNDS: usize = 3;
 pub fn review_phase(
     r: &Runner,
     plan_path: &str,
-    base_ref: Option<&str>,
-    git_available: bool,
+    base_ref: &str,
     parallel: Option<usize>,
 ) -> Result<(), String> {
     let reviewers = load_reviewers();
@@ -304,7 +303,6 @@ pub fn review_phase(
         r,
         plan_path,
         base_ref,
-        git_available,
         &reviewers.broad,
         "broad",
         1,
@@ -312,7 +310,7 @@ pub fn review_phase(
         parallel,
     );
     if let Some(ref issues) = issues {
-        run_fixer(r, plan_path, base_ref, git_available, issues)?;
+        run_fixer(r, plan_path, base_ref, issues)?;
     }
 
     // Focused pass: critical/major reviewers, loop till clean
@@ -321,7 +319,6 @@ pub fn review_phase(
             r,
             plan_path,
             base_ref,
-            git_available,
             &reviewers.focused,
             "focused",
             round,
@@ -334,7 +331,7 @@ pub fn review_phase(
                 return Ok(());
             }
             Some(ref issues) => {
-                run_fixer(r, plan_path, base_ref, git_available, issues)?;
+                run_fixer(r, plan_path, base_ref, issues)?;
             }
         }
     }
@@ -350,8 +347,7 @@ pub fn review_phase(
 fn run_review_fanout(
     r: &Runner,
     plan_path: &str,
-    base_ref: Option<&str>,
-    git_available: bool,
+    base_ref: &str,
     reviewers: &[ReviewRole],
     label: &str,
     round: usize,
@@ -374,7 +370,7 @@ fn run_review_fanout(
         .iter()
         .map(|rv| {
             let plan_path = plan_path.to_string();
-            let base_ref = base_ref.map(str::to_string);
+            let base_ref = base_ref.to_string();
             let role_name = rv.name.to_string();
             let role_scope = rv.scope.to_string();
             let role_prompt = rv.prompt.to_string();
@@ -383,8 +379,8 @@ fn run_review_fanout(
                 "review.txt",
                 &serde_json::json!({
                     "PlanPath": plan_path,
-                    "BaseRef": base_ref.unwrap_or_default(),
-                    "GitAvailable": git_available,
+                    "BaseRef": base_ref,
+                    "GitAvailable": true,
                     "RoleName": role_name,
                     "RoleScope": role_scope,
                     "RolePrompt": role_prompt,
@@ -466,8 +462,7 @@ fn run_review_fanout(
 fn run_fixer(
     r: &Runner,
     plan_path: &str,
-    base_ref: Option<&str>,
-    git_available: bool,
+    base_ref: &str,
     issues: &[String],
 ) -> Result<(), String> {
     warn("Running fixer...");
@@ -475,8 +470,8 @@ fn run_fixer(
         "fix.txt",
         &serde_json::json!({
             "PlanPath": plan_path,
-            "BaseRef": base_ref.unwrap_or_default(),
-            "GitAvailable": git_available,
+            "BaseRef": base_ref,
+            "GitAvailable": true,
             "Issues": issues.join("\n\n"),
         }),
     );

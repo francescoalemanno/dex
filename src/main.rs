@@ -13,14 +13,14 @@ use std::process::exit;
 use std::time::Duration;
 
 use crate::core::{
-    dex_path, ensure_dex_dir, git_trimmed_output, load_config, load_feedbacks,
-    load_review_base_ref, read_dex_file, reset_dex_runtime_artifacts, save_config,
-    save_plan_request, save_review_base_ref, seed_prompts, Config,
+    dex_path, ensure_dex_dir, git_trimmed_output, impl_commits_base_ref, load_config,
+    load_feedbacks, read_dex_file, reset_dex_runtime_artifacts, save_config, save_plan_request,
+    seed_prompts, Config,
 };
 use crate::phases::{bare_phase, finalize_phase, impl_phase, plan_phase, review_phase};
 use crate::plan::validate_candidate_plan;
 use crate::runner::{kill_all_children, Runner};
-use crate::ui::{app_header, banner, err_msg, info, warn};
+use crate::ui::{app_header, banner, err_msg, info};
 
 const REVISION: &str = env!("CARGO_PKG_VERSION");
 
@@ -124,12 +124,17 @@ struct ApplyCmd {}
 #[argh(
     subcommand,
     name = "review",
-    example = "Review the current implementation:\n  {command_name} --parallel 2"
+    example = "Review the current implementation:\n  {command_name} --parallel 2",
+    example = "Review against a specific base:\n  {command_name} --from main"
 )]
 struct ReviewCmd {
     /// max reviewers to run in parallel (default: all)
     #[argh(option)]
     parallel: Option<usize>,
+
+    /// base ref for the review diff (used when no impl_commits.jsonl exists)
+    #[argh(option)]
+    from: Option<String>,
 }
 
 /// send a request straight to the agent for N iterations
@@ -341,7 +346,6 @@ fn cmd_plan(runner: &Runner, cmd: PlanCmd) -> CmdResult {
     let request = read_text_or_file(cmd.request, "request")?;
     match plan_phase(runner, &request, Vec::new())? {
         Some(_) => {
-            snapshot_review_base_ref();
             banner("DONE");
             info("Plan saved.");
             Ok(())
@@ -371,7 +375,6 @@ fn cmd_import(cmd: ImportCmd) -> CmdResult {
     fs::write(&plan_path, &imported_plan)
         .map_err(|e| format!("write imported plan to {}: {}", plan_path, e))?;
     save_plan_request(&format!("Imported plan from {}", cmd.file));
-    snapshot_review_base_ref();
 
     banner("DONE");
     info(&format!("Plan imported from {}.", cmd.file));
@@ -395,7 +398,6 @@ fn cmd_amend(runner: &Runner, cmd: AmendCmd) -> CmdResult {
 
     match plan_phase(runner, &request, feedbacks)? {
         Some(_) => {
-            snapshot_review_base_ref();
             banner("DONE");
             info("Plan updated.");
             Ok(())
@@ -440,18 +442,23 @@ fn cmd_review(runner: &Runner, cmd: ReviewCmd) -> CmdResult {
         ));
     }
 
-    let review_ctx = load_review_context();
-    if !review_ctx.git_available {
-        warn("Review base ref is unavailable; review will run without git diff context.");
-    }
+    let base_ref = match impl_commits_base_ref() {
+        Some(r) => r,
+        None => match cmd.from {
+            Some(r) => {
+                git_trimmed_output(&["rev-parse", "--verify", &r])
+                    .map_err(|e| CmdError::Failure(format!("invalid --from ref {:?}: {}", r, e)))?;
+                r
+            }
+            None => {
+                return Err(CmdError::Failure(
+                    "No implementation history found. Run `dex apply` first, or pass `--from <base-ref>` explicitly.".into(),
+                ));
+            }
+        },
+    };
 
-    review_phase(
-        runner,
-        &plan_path,
-        review_ctx.base_ref.as_deref(),
-        review_ctx.git_available,
-        cmd.parallel,
-    )?;
+    review_phase(runner, &plan_path, &base_ref, cmd.parallel)?;
 
     banner("DONE");
     info("Review complete.");
@@ -575,43 +582,6 @@ fn resolve_cli(explicit: Option<String>) -> String {
         return first.to_string();
     }
     Config::default().cli
-}
-
-fn snapshot_review_base_ref() {
-    let review_base_ref = resolve_current_head_for_review();
-    save_review_base_ref(review_base_ref.as_deref());
-}
-
-struct ReviewContext {
-    base_ref: Option<String>,
-    git_available: bool,
-}
-
-fn load_review_context() -> ReviewContext {
-    if git_trimmed_output(&["rev-parse", "--is-inside-work-tree"]).is_err() {
-        return ReviewContext {
-            base_ref: None,
-            git_available: false,
-        };
-    }
-
-    let base_ref = load_review_base_ref().and_then(|base_ref| {
-        git_trimmed_output(&["rev-parse", "--verify", &base_ref])
-            .ok()
-            .map(|_| base_ref)
-    });
-
-    ReviewContext {
-        git_available: base_ref.is_some(),
-        base_ref,
-    }
-}
-
-fn resolve_current_head_for_review() -> Option<String> {
-    if git_trimmed_output(&["rev-parse", "--is-inside-work-tree"]).is_err() {
-        return None;
-    }
-    git_trimmed_output(&["rev-parse", "HEAD"]).ok()
 }
 
 // ── Arg parsing & help ──

@@ -7,7 +7,6 @@ use std::process::Command;
 
 const DEX_DIR: &str = ".dex";
 const DEX_PROMPTS_DIR: &str = ".dex/prompts";
-const REVIEW_BASE_REF_FILE: &str = "review-base-ref.txt";
 const BUILTIN_REVIEWERS: &str = include_str!("../prompts/reviewers.json");
 const IMPL_COMMITS_FILE: &str = "impl_commits.jsonl";
 
@@ -126,20 +125,6 @@ pub fn remove_dex_file(name: &str) {
     fs::remove_file(dex_path(name)).ok();
 }
 
-pub fn load_review_base_ref() -> Option<String> {
-    read_dex_file(REVIEW_BASE_REF_FILE)
-}
-
-pub fn save_review_base_ref(base_ref: Option<&str>) {
-    match base_ref.map(str::trim).filter(|value| !value.is_empty()) {
-        Some(base_ref) => {
-            ensure_dex_dir();
-            fs::write(dex_path(REVIEW_BASE_REF_FILE), format!("{}\n", base_ref)).ok();
-        }
-        None => remove_dex_file(REVIEW_BASE_REF_FILE),
-    }
-}
-
 pub fn save_plan_request(request: &str) {
     ensure_dex_dir();
     fs::write(dex_path("request.txt"), request).ok();
@@ -164,7 +149,6 @@ pub fn reset_dex_runtime_artifacts() {
     remove_dex_file("request.txt");
     remove_dex_file("feedbacks.json");
     remove_dex_file("questions.md");
-    remove_dex_file(REVIEW_BASE_REF_FILE);
     remove_dex_file(IMPL_COMMITS_FILE);
 
     let entries = match fs::read_dir(DEX_DIR) {
@@ -311,6 +295,19 @@ pub fn load_recent_impl_commits(n: usize) -> Vec<ImplCommit> {
         .collect();
     let start = all.len().saturating_sub(n);
     all[start..].to_vec()
+}
+
+/// Return the `before` SHA of the very first impl commit, if the JSONL exists.
+pub fn impl_commits_base_ref() -> Option<String> {
+    let path = dex_path(IMPL_COMMITS_FILE);
+    let content = fs::read_to_string(&path).ok()?;
+    let first_line = content.lines().next()?;
+    let commit: ImplCommit = serde_json::from_str(first_line).ok()?;
+    if commit.before.is_empty() {
+        None
+    } else {
+        Some(commit.before)
+    }
 }
 
 /// Build a summary string from recent impl commits for prompt injection.
