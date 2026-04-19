@@ -58,10 +58,7 @@ enum PlanReviewResult {
     Loop,
 }
 
-fn plan_review_loop(
-    plan: &str,
-    feedbacks: &mut Vec<String>,
-) -> Result<PlanReviewResult, String> {
+fn plan_review_loop(plan: &str, feedbacks: &mut Vec<String>) -> Result<PlanReviewResult, String> {
     loop {
         let choice = prompt_choice(
             "Accept, edit, revise, or reject?",
@@ -327,6 +324,12 @@ fn load_reviewers() -> Reviewers {
 
 const MAX_FOCUSED_ROUNDS: usize = 3;
 
+struct PreparedReview {
+    prompt: String,
+    role_name: String,
+    role_scope: String,
+}
+
 pub fn review_phase(
     r: &Runner,
     plan_path: &str,
@@ -335,7 +338,6 @@ pub fn review_phase(
 ) -> Result<(), String> {
     let reviewers = load_reviewers();
 
-    // Broad pass: all reviewers, once
     let issues = run_review_fanout(
         r,
         plan_path,
@@ -350,7 +352,6 @@ pub fn review_phase(
         run_fixer(r, plan_path, base_ref, issues)?;
     }
 
-    // Focused pass: critical/major reviewers, loop till clean
     for round in 1..=MAX_FOCUSED_ROUNDS {
         let issues = run_review_fanout(
             r,
@@ -367,9 +368,7 @@ pub fn review_phase(
                 info("All focused reviewers report ZERO ISSUES. Review phase complete!");
                 return Ok(());
             }
-            Some(ref issues) => {
-                run_fixer(r, plan_path, base_ref, issues)?;
-            }
+            Some(ref issues) => run_fixer(r, plan_path, base_ref, issues)?,
         }
     }
 
@@ -397,76 +396,95 @@ fn run_review_fanout(
     ));
 
     for rv in reviewers {
-        remove_dex_file(&format!("review-{}.md", rv.name));
+        remove_dex_file(&review_output_name(&rv.name));
     }
 
-    // Run reviewers in parallel using threads, respecting concurrency limit
-    let max_concurrent = parallel.unwrap_or(reviewers.len()).max(1);
+    let prepared = prepare_review_jobs(plan_path, base_ref, reviewers);
+    run_review_batches(r, &prepared, parallel.unwrap_or(reviewers.len()).max(1));
+    collect_review_issues(reviewers)
+}
 
-    let prepared: Vec<_> = reviewers
+fn review_output_name(role_name: &str) -> String {
+    format!("review-{}.md", role_name)
+}
+
+fn prepare_review_jobs(
+    plan_path: &str,
+    base_ref: &str,
+    reviewers: &[ReviewRole],
+) -> Vec<PreparedReview> {
+    reviewers
         .iter()
-        .map(|rv| {
-            let plan_path = plan_path.to_string();
-            let base_ref = base_ref.to_string();
-            let role_name = rv.name.to_string();
-            let role_scope = rv.scope.to_string();
-            let role_prompt = rv.prompt.to_string();
-
-            let p = render_prompt(
+        .map(|rv| PreparedReview {
+            prompt: render_prompt(
                 "review.txt",
                 &serde_json::json!({
                     "PlanPath": plan_path,
                     "BaseRef": base_ref,
-                    "RoleName": role_name,
-                    "RoleScope": role_scope,
-                    "RolePrompt": role_prompt,
-                    "ReviewName": format!("review-{}.md", rv.name),
+                    "RoleName": rv.name,
+                    "RoleScope": rv.scope,
+                    "RolePrompt": rv.prompt,
+                    "ReviewName": review_output_name(&rv.name),
                 }),
-            );
+            ),
+            role_name: rv.name.clone(),
+            role_scope: rv.scope.clone(),
+        })
+        .collect()
+}
 
-            (p, role_name, role_scope)
+fn run_review_batches(r: &Runner, prepared: &[PreparedReview], max_concurrent: usize) {
+    for batch in prepared.chunks(max_concurrent) {
+        run_review_batch(r, batch);
+    }
+}
+
+fn run_review_batch(r: &Runner, batch: &[PreparedReview]) {
+    let handles: Vec<_> = batch
+        .iter()
+        .map(|review| {
+            info(&format!(
+                "[parallel:{}] running {} review",
+                review.role_name, review.role_scope
+            ));
+
+            let runner = r.labeled(&review.role_name);
+            let prompt = review.prompt.clone();
+            let role_name = review.role_name.clone();
+            let role_scope = review.role_scope.clone();
+            std::thread::spawn(move || {
+                let result = runner.run(&prompt);
+                match &result {
+                    Ok(()) => info(&format!(
+                        "[parallel:{}] done {} review (exit=0)",
+                        role_name, role_scope
+                    )),
+                    Err(_) => err_msg(&format!(
+                        "[parallel:{}] done {} review (exit=1)",
+                        role_name, role_scope
+                    )),
+                }
+                result
+            })
         })
         .collect();
 
-    for batch in prepared.chunks(max_concurrent) {
-        let handles: Vec<_> = batch
-            .iter()
-            .map(|(p, role_name, role_scope)| {
-                info(&format!(
-                    "[parallel:{}] running {} review",
-                    role_name, role_scope
-                ));
-
-                let lr = r.labeled(role_name);
-                let p = p.clone();
-                let name_clone = role_name.clone();
-                let scope_clone = role_scope.clone();
-                std::thread::spawn(move || {
-                    let result = lr.run(&p);
-                    match &result {
-                        Ok(()) => info(&format!(
-                            "[parallel:{}] done {} review (exit=0)",
-                            name_clone, scope_clone
-                        )),
-                        Err(_) => err_msg(&format!(
-                            "[parallel:{}] done {} review (exit=1)",
-                            name_clone, scope_clone
-                        )),
-                    }
-                    result
-                })
-            })
-            .collect();
-
-        for handle in handles {
-            let _ = handle.join();
+    for (review, handle) in batch.iter().zip(handles) {
+        if handle.join().is_err() {
+            err_msg(&format!(
+                "[parallel:{}] review thread panicked",
+                review.role_name
+            ));
         }
     }
+}
 
+fn collect_review_issues(reviewers: &[ReviewRole]) -> Option<Vec<String>> {
     let mut all_clean = true;
     let mut issues = Vec::new();
+
     for rv in reviewers {
-        let review = read_dex_file(&format!("review-{}.md", rv.name));
+        let review = read_dex_file(&review_output_name(&rv.name));
         match review {
             None => {
                 warn(&format!("Reviewer {:?} produced no output", rv.name));
@@ -517,114 +535,27 @@ fn is_clean_review(review: &str) -> bool {
     re.is_match(review)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{format_task_label, is_clean_review, read_bare_request_file, Reviewers};
-    use std::fs;
-    use std::path::PathBuf;
-
-    fn write_temp_file(contents: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "dex-phases-test-{}-{}.txt",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        fs::write(&path, contents).unwrap();
-        path
-    }
-
-    #[test]
-    fn focused_reviewer_names_do_not_overlap_with_broad_reviewers() {
-        let r = Reviewers::builtin();
-        for focused in &r.focused {
-            for broad in &r.broad {
-                assert_ne!(focused.name, broad.name);
-                assert!(!focused.name.contains(&broad.name));
-                assert!(!broad.name.contains(&focused.name));
-            }
-        }
-    }
-
-    #[test]
-    fn is_clean_review_accepts_variations() {
-        assert!(is_clean_review("- ZERO FINDINGS"));
-        assert!(is_clean_review("- zero findings"));
-        assert!(is_clean_review("- Zero Findings"));
-        assert!(is_clean_review("* No issues"));
-        assert!(is_clean_review("- No findings"));
-        assert!(is_clean_review("* ZERO ISSUES"));
-        assert!(is_clean_review("  - zero  findings  "));
-    }
-
-    #[test]
-    fn is_clean_review_rejects_dirty() {
-        assert!(!is_clean_review("Found 3 issues"));
-        assert!(!is_clean_review("Some problems detected"));
-        assert!(!is_clean_review(""));
-    }
-
-    #[test]
-    fn bare_request_file_is_trimmed() {
-        let path = write_temp_file("  hello from file  \n");
-        let request = read_bare_request_file(path.to_str().unwrap());
-        let _ = fs::remove_file(&path);
-
-        assert_eq!(request.unwrap(), Some("hello from file".to_string()));
-    }
-
-    #[test]
-    fn bare_request_file_stops_on_empty_trimmed_content() {
-        let path = write_temp_file(" \n\t ");
-        let request = read_bare_request_file(path.to_str().unwrap());
-        let _ = fs::remove_file(&path);
-
-        assert_eq!(request.unwrap(), None);
-    }
-
-    #[test]
-    fn bare_request_file_stops_on_missing_file() {
-        let path = std::env::temp_dir().join(format!(
-            "dex-phases-missing-{}-{}.txt",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-
-        assert_eq!(
-            read_bare_request_file(path.to_str().unwrap()).unwrap(),
-            None
-        );
-    }
-
-    #[test]
-    fn format_task_label_strips_markdown_heading_prefix() {
-        assert_eq!(
-            format_task_label("### Task 2: Build API"),
-            "Task 2: Build API"
-        );
-        assert_eq!(format_task_label("## Overview"), "Overview");
-        assert_eq!(format_task_label(""), "(unnamed task)");
-    }
-}
-
 // ── Bare Mode ──
 
-fn read_bare_request_file(path: &str) -> Result<Option<String>, String> {
+enum BareRequestFile {
+    Ready(String),
+    Missing,
+    Empty,
+}
+
+fn read_bare_request_file(path: &str) -> Result<BareRequestFile, String> {
     let request = match fs::read_to_string(path) {
         Ok(request) => request,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BareRequestFile::Missing),
         Err(e) => return Err(format!("read bare request {:?}: {}", path, e)),
     };
+
     let request = request.trim().to_string();
     if request.is_empty() {
-        return Ok(None);
+        return Ok(BareRequestFile::Empty);
     }
-    Ok(Some(request))
+
+    Ok(BareRequestFile::Ready(request))
 }
 
 pub fn bare_phase(r: &Runner, request_file: &str, max_iterations: usize) -> Result<(), String> {
@@ -632,12 +563,23 @@ pub fn bare_phase(r: &Runner, request_file: &str, max_iterations: usize) -> Resu
     for iteration in 1..=max_iterations {
         phase_detail("iteration", &format!("{}/{}", iteration, max_iterations));
         let request = match read_bare_request_file(request_file)? {
-            Some(request) => request,
-            None => {
-                info("Bare loop stopped due to missing request.");
+            BareRequestFile::Ready(request) => request,
+            BareRequestFile::Missing => {
+                info(&format!(
+                    "Bare loop stopped: request file {:?} is missing.",
+                    request_file
+                ));
+                return Ok(());
+            }
+            BareRequestFile::Empty => {
+                info(&format!(
+                    "Bare loop stopped: request file {:?} is empty after trimming.",
+                    request_file
+                ));
                 return Ok(());
             }
         };
+
         let p = render_prompt("bare.txt", &serde_json::json!({"Request": request}));
         if let Err(e) = r.run(&p) {
             return Err(format!("bare iteration {} failed: {}", iteration, e));
@@ -704,4 +646,104 @@ fn commit_count_ahead(finalize_target: &str) -> Result<u64, String> {
     count
         .parse::<u64>()
         .map_err(|e| format!("parse git rev-list count {:?}: {}", count, e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        format_task_label, is_clean_review, read_bare_request_file, BareRequestFile, Reviewers,
+    };
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn write_temp_file(contents: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "dex-phases-test-{}-{}.txt",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        fs::write(&path, contents).unwrap();
+        path
+    }
+
+    #[test]
+    fn focused_reviewer_names_do_not_overlap_with_broad_reviewers() {
+        let r = Reviewers::builtin();
+        for focused in &r.focused {
+            for broad in &r.broad {
+                assert_ne!(focused.name, broad.name);
+                assert!(!focused.name.contains(&broad.name));
+                assert!(!broad.name.contains(&focused.name));
+            }
+        }
+    }
+
+    #[test]
+    fn is_clean_review_accepts_variations() {
+        assert!(is_clean_review("- ZERO FINDINGS"));
+        assert!(is_clean_review("- zero findings"));
+        assert!(is_clean_review("- Zero Findings"));
+        assert!(is_clean_review("* No issues"));
+        assert!(is_clean_review("- No findings"));
+        assert!(is_clean_review("* ZERO ISSUES"));
+        assert!(is_clean_review("  - zero  findings  "));
+    }
+
+    #[test]
+    fn is_clean_review_rejects_dirty() {
+        assert!(!is_clean_review("Found 3 issues"));
+        assert!(!is_clean_review("Some problems detected"));
+        assert!(!is_clean_review(""));
+    }
+
+    #[test]
+    fn bare_request_file_is_trimmed() {
+        let path = write_temp_file("  hello from file  \n");
+        let request = read_bare_request_file(path.to_str().unwrap());
+        let _ = fs::remove_file(&path);
+
+        assert!(matches!(
+            request.unwrap(),
+            BareRequestFile::Ready(request) if request == "hello from file"
+        ));
+    }
+
+    #[test]
+    fn bare_request_file_stops_on_empty_trimmed_content() {
+        let path = write_temp_file(" \n\t ");
+        let request = read_bare_request_file(path.to_str().unwrap());
+        let _ = fs::remove_file(&path);
+
+        assert!(matches!(request.unwrap(), BareRequestFile::Empty));
+    }
+
+    #[test]
+    fn bare_request_file_stops_on_missing_file() {
+        let path = std::env::temp_dir().join(format!(
+            "dex-phases-missing-{}-{}.txt",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+
+        assert!(matches!(
+            read_bare_request_file(path.to_str().unwrap()).unwrap(),
+            BareRequestFile::Missing
+        ));
+    }
+
+    #[test]
+    fn format_task_label_strips_markdown_heading_prefix() {
+        assert_eq!(
+            format_task_label("### Task 2: Build API"),
+            "Task 2: Build API"
+        );
+        assert_eq!(format_task_label("## Overview"), "Overview");
+        assert_eq!(format_task_label(""), "(unnamed task)");
+    }
 }

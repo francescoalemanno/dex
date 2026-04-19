@@ -17,7 +17,9 @@ use crate::core::{
     load_config, load_feedbacks, read_dex_file, require_git_repo, reset_dex_runtime_artifacts,
     save_config, save_plan_request, seed_prompts, Config,
 };
-use crate::phases::{bare_phase, finalize_phase, impl_phase, plan_phase, resume_plan, review_phase};
+use crate::phases::{
+    bare_phase, finalize_phase, impl_phase, plan_phase, resume_plan, review_phase,
+};
 use crate::plan::validate_candidate_plan;
 use crate::runner::{kill_all_children, set_verbose, Runner};
 use crate::ui::{app_header, banner, err_msg, info};
@@ -245,6 +247,11 @@ impl From<String> for CmdError {
 
 // ── Main ──
 
+struct PreparedConfig {
+    config: Config,
+    cli_name: String,
+}
+
 struct ChildGuard;
 
 impl Drop for ChildGuard {
@@ -262,97 +269,7 @@ fn main() {
     })
     .ok();
 
-    let parsed = parse_args();
-    let args = parsed.args;
-
-    if args.version {
-        println!("dex {}", REVISION);
-        return;
-    }
-
-    set_verbose(args.verbose);
-    ensure_config();
-    let mut config = load_config();
-
-    if let Some(ref name) = args.cli {
-        if let Err(e) = crate::runner::validate_cli_name(&config, name) {
-            err_msg(&e);
-            exit(1);
-        }
-    }
-
-    let cli_name = resolve_cli(args.cli.clone(), &config);
-    let cli_changed = config.cli != cli_name;
-    if cli_changed {
-        config.cli = cli_name.clone();
-        save_config(&config);
-    }
-
-    let command = match args.command {
-        Some(cmd) => cmd,
-        None => {
-            if args.cli.is_some() {
-                info(&format!("Default CLI set to {}.", config.cli));
-                return;
-            }
-            print_help(&parsed.command_name);
-            return;
-        }
-    };
-
-    ensure_dex_dir();
-    if args.update_prompts {
-        seed_prompts(true);
-        info("Prompt templates updated to built-in defaults.");
-    } else {
-        seed_prompts(false);
-    }
-
-    if let Err(e) = require_git_repo() {
-        if !std::io::stdin().is_terminal() {
-            err_msg(&e);
-            exit(1);
-        }
-        let choice = crate::ui::prompt_choice(
-            "No git repository found. Initialize one here?",
-            &["yes", "no"],
-        );
-        if choice == "no" {
-            err_msg("dex requires a git repository. Aborting.");
-            exit(1);
-        }
-        match git_trimmed_output(&["init"]) {
-            Ok(_) => info("Initialized git repository."),
-            Err(init_err) => {
-                err_msg(&format!("git init failed: {}", init_err));
-                exit(1);
-            }
-        }
-    }
-
-    app_header();
-
-    let timeout = Duration::from_secs(args.timeout);
-    let runner = match Runner::new(&config, &cli_name, timeout) {
-        Ok(r) => r,
-        Err(e) => {
-            err_msg(&e);
-            exit(1);
-        }
-    };
-
-    let result = match command {
-        SubCommand::Plan(cmd) => cmd_plan(&runner, cmd),
-        SubCommand::Import(cmd) => cmd_import(cmd),
-        SubCommand::Amend(cmd) => cmd_amend(&runner, cmd),
-        SubCommand::Apply(cmd) => cmd_apply(&runner, cmd),
-        SubCommand::Review(cmd) => cmd_review(&runner, cmd),
-        SubCommand::Bare(cmd) => cmd_bare(&runner, cmd),
-        SubCommand::Finalize(cmd) => cmd_finalize(&runner, cmd),
-        SubCommand::Research(cmd) => cmd_research(&runner, cmd),
-    };
-
-    match result {
+    match run_app() {
         Ok(()) => {}
         Err(CmdError::Cancelled) => exit(2),
         Err(CmdError::Failure(msg)) => {
@@ -360,6 +277,180 @@ fn main() {
             exit(1);
         }
     }
+}
+
+fn run_app() -> CmdResult {
+    let parsed = parse_args();
+    let args = parsed.args;
+
+    if args.version {
+        println!("dex {}", REVISION);
+        return Ok(());
+    }
+
+    set_verbose(args.verbose);
+    let prepared = prepare_config(&args)?;
+
+    let cli_override = args.cli.is_some();
+    let update_prompts = args.update_prompts;
+    let timeout_secs = args.timeout;
+
+    let command = match args.command {
+        Some(cmd) => cmd,
+        None => return handle_no_command(&parsed.command_name, cli_override, &prepared),
+    };
+
+    let runner = bootstrap_runner(update_prompts, timeout_secs, &prepared)?;
+    dispatch_command(&runner, command)
+}
+
+fn prepare_config(args: &Args) -> Result<PreparedConfig, CmdError> {
+    ensure_config();
+    let mut config = load_config();
+
+    if let Some(ref name) = args.cli {
+        crate::runner::validate_cli_name(&config, name).map_err(CmdError::Failure)?;
+    }
+
+    let cli_name = resolve_cli(args.cli.clone(), &config);
+    if config.cli != cli_name {
+        config.cli = cli_name.clone();
+        save_config(&config);
+    }
+
+    Ok(PreparedConfig { config, cli_name })
+}
+
+fn handle_no_command(
+    command_name: &str,
+    cli_override: bool,
+    prepared: &PreparedConfig,
+) -> CmdResult {
+    if cli_override {
+        info(&format!("Default CLI set to {}.", prepared.cli_name));
+    } else {
+        print_help(command_name);
+    }
+    Ok(())
+}
+
+fn bootstrap_runner(
+    update_prompts: bool,
+    timeout_secs: u64,
+    prepared: &PreparedConfig,
+) -> Result<Runner, CmdError> {
+    ensure_dex_dir();
+    if update_prompts {
+        seed_prompts(true);
+        info("Prompt templates updated to built-in defaults.");
+    } else {
+        seed_prompts(false);
+    }
+
+    ensure_repo_ready()?;
+    app_header();
+
+    Runner::new(
+        &prepared.config,
+        &prepared.cli_name,
+        Duration::from_secs(timeout_secs),
+    )
+    .map_err(CmdError::Failure)
+}
+
+fn ensure_repo_ready() -> CmdResult {
+    if let Err(e) = require_git_repo() {
+        if !std::io::stdin().is_terminal() {
+            return Err(CmdError::Failure(e));
+        }
+
+        let choice = crate::ui::prompt_choice(
+            "No git repository found. Initialize one here?",
+            &["yes", "no"],
+        );
+        if choice == "no" {
+            return Err(CmdError::Failure(
+                "dex requires a git repository. Aborting.".into(),
+            ));
+        }
+
+        git_trimmed_output(&["init"])
+            .map(|_| info("Initialized git repository."))
+            .map_err(|init_err| CmdError::Failure(format!("git init failed: {}", init_err)))?;
+    }
+
+    Ok(())
+}
+
+fn dispatch_command(runner: &Runner, command: SubCommand) -> CmdResult {
+    match command {
+        SubCommand::Plan(cmd) => cmd_plan(runner, cmd),
+        SubCommand::Import(cmd) => cmd_import(cmd),
+        SubCommand::Amend(cmd) => cmd_amend(runner, cmd),
+        SubCommand::Apply(cmd) => cmd_apply(runner, cmd),
+        SubCommand::Review(cmd) => cmd_review(runner, cmd),
+        SubCommand::Bare(cmd) => cmd_bare(runner, cmd),
+        SubCommand::Finalize(cmd) => cmd_finalize(runner, cmd),
+        SubCommand::Research(cmd) => cmd_research(runner, cmd),
+    }
+}
+
+fn finish(message: &str) {
+    banner("DONE");
+    info(message);
+}
+
+fn require_plan_exists() -> Result<String, CmdError> {
+    let plan_path = dex_path("plan.md");
+    if Path::new(&plan_path).exists() {
+        Ok(plan_path)
+    } else {
+        Err(CmdError::Failure(
+            "No plan exists. Use `dex plan` or `dex import` first.".into(),
+        ))
+    }
+}
+
+fn bare_request_looks_like_path(raw: &str) -> bool {
+    raw.starts_with('.')
+        || raw.starts_with('~')
+        || raw.contains('/')
+        || raw.contains('\\')
+        || Path::new(raw).extension().is_some()
+}
+
+fn bare_request_should_warn_missing_file(raw: &str, request_len: usize) -> bool {
+    request_len == 1 && bare_request_looks_like_path(raw) && !Path::new(raw).exists()
+}
+
+fn resolve_bare_request_file(request: Vec<String>) -> Result<String, CmdError> {
+    let raw = request.join(" ");
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err(CmdError::Failure(
+            "missing request; pass request text or a file path containing it.".into(),
+        ));
+    }
+
+    if Path::new(raw).is_file() {
+        return Ok(raw.to_string());
+    }
+
+    if bare_request_should_warn_missing_file(raw, request.len()) {
+        info(&format!(
+            "No request file found at {:?}; treating it as inline request text.",
+            raw
+        ));
+    }
+
+    ensure_dex_dir();
+    let path = dex_path("bare_prompt.txt");
+    fs::write(&path, raw).map_err(|e| format!("write {}: {}", path, e))?;
+    info(&format!(
+        "Request persisted to {}. You can edit this file while iterations are running.",
+        path
+    ));
+    Ok(path)
 }
 
 // ── Subcommand handlers ──
@@ -376,7 +467,6 @@ fn cmd_plan(runner: &Runner, cmd: PlanCmd) -> CmdResult {
     }
 
     let has_request = cmd.request.iter().any(|s| !s.trim().is_empty());
-
     if plan_exists && !cmd.force && has_request {
         return Err(CmdError::Failure(
             "A plan already exists. Use `dex plan` to resume it, or `dex plan --force <request>` to overwrite.".into(),
@@ -384,21 +474,19 @@ fn cmd_plan(runner: &Runner, cmd: PlanCmd) -> CmdResult {
     }
 
     if plan_exists && !cmd.force {
-        match resume_plan(runner)? {
+        return match resume_plan(runner)? {
             Some(_) => {
-                banner("DONE");
-                info("Plan saved.");
-                return Ok(());
+                finish("Plan saved.");
+                Ok(())
             }
-            None => return Err(CmdError::Cancelled),
-        }
+            None => Err(CmdError::Cancelled),
+        };
     }
 
     let request = read_text_or_file(cmd.request, "request")?;
     match plan_phase(runner, &request, Vec::new())? {
         Some(_) => {
-            banner("DONE");
-            info("Plan saved.");
+            finish("Plan saved.");
             Ok(())
         }
         None => Err(CmdError::Cancelled),
@@ -427,20 +515,14 @@ fn cmd_import(cmd: ImportCmd) -> CmdResult {
         .map_err(|e| format!("write imported plan to {}: {}", plan_path, e))?;
     save_plan_request(&format!("Imported plan from {}", cmd.file));
 
-    banner("DONE");
-    info(&format!("Plan imported from {}.", cmd.file));
+    finish(&format!("Plan imported from {}.", cmd.file));
     Ok(())
 }
 
 fn cmd_amend(runner: &Runner, cmd: AmendCmd) -> CmdResult {
     ensure_interactive_stdin("amend")?;
 
-    let plan_path = dex_path("plan.md");
-    if !Path::new(&plan_path).exists() {
-        return Err(CmdError::Failure(
-            "No plan exists. Use `dex plan` or `dex import` first.".into(),
-        ));
-    }
+    require_plan_exists()?;
 
     let feedback = read_text_or_file(cmd.feedback, "feedback")?;
     let request = read_dex_file("request.txt").unwrap_or_else(|| "Amend the current plan.".into());
@@ -449,8 +531,7 @@ fn cmd_amend(runner: &Runner, cmd: AmendCmd) -> CmdResult {
 
     match plan_phase(runner, &request, feedbacks)? {
         Some(_) => {
-            banner("DONE");
-            info("Plan updated.");
+            finish("Plan updated.");
             Ok(())
         }
         None => Err(CmdError::Cancelled),
@@ -458,12 +539,7 @@ fn cmd_amend(runner: &Runner, cmd: AmendCmd) -> CmdResult {
 }
 
 fn cmd_apply(runner: &Runner, _cmd: ApplyCmd) -> CmdResult {
-    let plan_path = dex_path("plan.md");
-    if !Path::new(&plan_path).exists() {
-        return Err(CmdError::Failure(
-            "No plan exists. Use `dex plan` or `dex import` first.".into(),
-        ));
-    }
+    let plan_path = require_plan_exists()?;
 
     let status = git_trimmed_output(&["status", "--porcelain"])
         .map_err(|e| CmdError::Failure(format!("failed to check git status: {}", e)))?;
@@ -475,18 +551,12 @@ fn cmd_apply(runner: &Runner, _cmd: ApplyCmd) -> CmdResult {
     }
 
     impl_phase(runner, &plan_path)?;
-    banner("DONE");
-    info("Implementation complete.");
+    finish("Implementation complete.");
     Ok(())
 }
 
 fn cmd_review(runner: &Runner, cmd: ReviewCmd) -> CmdResult {
-    let plan_path = dex_path("plan.md");
-    if !Path::new(&plan_path).exists() {
-        return Err(CmdError::Failure(
-            "No plan exists. Use `dex plan` or `dex import` first.".into(),
-        ));
-    }
+    let plan_path = require_plan_exists()?;
 
     let base_ref = match impl_commits_base_ref() {
         Some(r) => r,
@@ -505,38 +575,14 @@ fn cmd_review(runner: &Runner, cmd: ReviewCmd) -> CmdResult {
     };
 
     review_phase(runner, &plan_path, &base_ref, cmd.parallel)?;
-
-    banner("DONE");
-    info("Review complete.");
+    finish("Review complete.");
     Ok(())
 }
 
 fn cmd_bare(runner: &Runner, cmd: BareCmd) -> CmdResult {
-    let raw = cmd.request.join(" ");
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return Err(CmdError::Failure(
-            "missing request; pass request text or a file path containing it.".into(),
-        ));
-    }
-
-    let request_file = if Path::new(raw).is_file() {
-        raw.to_string()
-    } else {
-        ensure_dex_dir();
-        let path = dex_path("bare_prompt.txt");
-        fs::write(&path, raw).map_err(|e| format!("write {}: {}", path, e))?;
-        info(&format!(
-            "Request persisted to {}. You can edit this file while iterations are running.",
-            path
-        ));
-        path
-    };
-
+    let request_file = resolve_bare_request_file(cmd.request)?;
     bare_phase(runner, &request_file, cmd.iterations)?;
-
-    banner("DONE");
-    info("Bare mode complete.");
+    finish("Bare mode complete.");
     Ok(())
 }
 
@@ -563,17 +609,19 @@ fn cmd_research(runner: &Runner, cmd: ResearchCmd) -> CmdResult {
     }
 
     let config = if cmd.command.is_some() {
-        research::ResearchConfig::new(
+        research::ResearchConfig {
+            entry_type: "config".to_string(),
             goal,
-            cmd.command.unwrap(),
-            cmd.metric.unwrap_or_else(|| "duration_s".to_string()),
-            String::new(),
-            cmd.direction.unwrap_or_else(|| "lower".to_string()),
-            cmd.scope
+            command: cmd.command.unwrap(),
+            metric_name: cmd.metric.unwrap_or_else(|| "duration_s".to_string()),
+            metric_unit: String::new(),
+            direction: cmd.direction.unwrap_or_else(|| "lower".to_string()),
+            files_in_scope: cmd
+                .scope
                 .unwrap_or_else(|| "(all project files)".to_string()),
-            cmd.constraints.unwrap_or_default(),
-            cmd.checks,
-        )
+            constraints: cmd.constraints.unwrap_or_default(),
+            checks_command: cmd.checks,
+        }
     } else if std::io::stdin().is_terminal() {
         research::interactive_setup(&goal)?
     } else {
@@ -589,9 +637,7 @@ fn cmd_research(runner: &Runner, cmd: ResearchCmd) -> CmdResult {
 fn cmd_finalize(runner: &Runner, cmd: FinalizeCmd) -> CmdResult {
     let plan_path = dex_path("plan.md");
     finalize_phase(runner, &plan_path, &cmd.onto)?;
-
-    banner("DONE");
-    info("Finalize complete.");
+    finish("Finalize complete.");
     Ok(())
 }
 
@@ -754,7 +800,8 @@ fn available_agents_help_section_with<S: AsRef<str>>(available: &[S]) -> String 
 #[cfg(test)]
 mod tests {
     use super::{
-        available_agents_help_section_with, read_text_or_file, render_help_output_with,
+        available_agents_help_section_with, bare_request_looks_like_path,
+        bare_request_should_warn_missing_file, read_text_or_file, render_help_output_with,
         top_level_help_output, CmdError,
     };
     use std::fs;
@@ -850,5 +897,30 @@ mod tests {
             Err(CmdError::Failure(msg)) => assert_eq!(msg, "request is empty after trimming."),
             _ => panic!("expected failure"),
         }
+    }
+
+    #[test]
+    fn bare_request_path_detection_warns_but_keeps_inline_text_supported() {
+        let missing = std::env::temp_dir().join(format!(
+            "dex-bare-missing-{}-{}.txt",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+
+        assert!(bare_request_should_warn_missing_file(
+            &missing.to_string_lossy(),
+            1
+        ));
+        assert!(bare_request_looks_like_path("notes.txt"));
+        assert!(bare_request_looks_like_path("./notes"));
+        assert!(!bare_request_looks_like_path("optimize runtime"));
+        assert!(!bare_request_looks_like_path("improve"));
+        assert!(!bare_request_should_warn_missing_file(
+            "optimize runtime",
+            2
+        ));
     }
 }

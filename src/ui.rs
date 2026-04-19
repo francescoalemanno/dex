@@ -114,25 +114,49 @@ pub fn phase_detail(key: &str, value: &str) {
 /// Print a success message: ✓ msg in green+bold.
 pub fn info(msg: &str) {
     let mut stream = locked_stderr();
-    write_styled_to(&mut stream, Some(Color::Green), true, false, &format!("\u{2713} {}", msg));
+    write_styled_to(
+        &mut stream,
+        Some(Color::Green),
+        true,
+        false,
+        &format!("\u{2713} {}", msg),
+    );
     let _ = writeln!(stream);
 }
 
 /// Print a warning: ▸ msg in yellow+bold.
 pub fn warn(msg: &str) {
     let mut stream = locked_stderr();
-    write_styled_to(&mut stream, Some(Color::Yellow), true, false, &format!("\u{25b8} {}", msg));
+    write_styled_to(
+        &mut stream,
+        Some(Color::Yellow),
+        true,
+        false,
+        &format!("\u{25b8} {}", msg),
+    );
     let _ = writeln!(stream);
 }
 
 /// Print an error: ✗ msg in red+bold.
 pub fn err_msg(msg: &str) {
     let mut stream = locked_stderr();
-    write_styled_to(&mut stream, Some(Color::Red), true, false, &format!("\u{2717} {}", msg));
+    write_styled_to(
+        &mut stream,
+        Some(Color::Red),
+        true,
+        false,
+        &format!("\u{2717} {}", msg),
+    );
     let _ = writeln!(stream);
 }
 
-fn write_styled_to(stream: &mut StandardStream, color: Option<Color>, bold: bool, dimmed: bool, text: &str) {
+fn write_styled_to(
+    stream: &mut StandardStream,
+    color: Option<Color>,
+    bold: bool,
+    dimmed: bool,
+    text: &str,
+) {
     let mut spec = ColorSpec::new();
     spec.set_fg(color).set_bold(bold).set_dimmed(dimmed);
     let _ = stream.set_color(&spec);
