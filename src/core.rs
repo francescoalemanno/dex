@@ -157,19 +157,26 @@ pub fn remove_dex_file(name: &str) {
 
 pub fn save_plan_request(request: &str) {
     ensure_dex_dir();
-    fs::write(dex_path("request.txt"), request).ok();
+    if let Err(e) = fs::write(dex_path("request.txt"), request) {
+        eprintln!("Error: failed to save plan request: {}", e);
+    }
 }
 
 pub fn save_feedbacks(feedbacks: &[String]) {
     ensure_dex_dir();
     let data = serde_json::to_string_pretty(feedbacks).unwrap_or_default();
-    fs::write(dex_path("feedbacks.json"), data).ok();
+    if let Err(e) = fs::write(dex_path("feedbacks.json"), data) {
+        eprintln!("Error: failed to save feedbacks: {}", e);
+    }
 }
 
 pub fn load_feedbacks() -> Vec<String> {
     let path = dex_path("feedbacks.json");
     match fs::read_to_string(&path) {
-        Ok(data) => serde_json::from_str(&data).unwrap_or_default(),
+        Ok(data) => serde_json::from_str(&data).unwrap_or_else(|e| {
+            eprintln!("Warning: failed to parse feedbacks.json: {}", e);
+            Vec::new()
+        }),
         Err(_) => Vec::new(),
     }
 }
@@ -367,7 +374,9 @@ pub fn load_config() -> Config {
 pub fn save_config(cfg: &Config) {
     ensure_config_dir();
     let data = serde_json::to_string_pretty(cfg).unwrap_or_default();
-    fs::write(dex_config_path(), format!("{}\n", data)).ok();
+    if let Err(e) = fs::write(dex_config_path(), format!("{}\n", data)) {
+        eprintln!("Error: failed to save config: {}", e);
+    }
 }
 
 pub fn git_trimmed_output(args: &[&str]) -> Result<String, String> {
@@ -448,16 +457,18 @@ pub fn append_impl_commits(commits: &[ImplCommit]) {
     }
     ensure_dex_dir();
     let path = dex_path(IMPL_COMMITS_FILE);
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .ok();
-    if let Some(ref mut f) = file {
-        use std::io::Write;
-        for commit in commits {
-            if let Ok(json) = serde_json::to_string(commit) {
-                let _ = writeln!(f, "{}", json);
+    let mut file = match fs::OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("Error: failed to open {}: {}", IMPL_COMMITS_FILE, e);
+            return;
+        }
+    };
+    use std::io::Write;
+    for commit in commits {
+        if let Ok(json) = serde_json::to_string(commit) {
+            if let Err(e) = writeln!(file, "{}", json) {
+                eprintln!("Error: failed to write to {}: {}", IMPL_COMMITS_FILE, e);
             }
         }
     }
@@ -469,7 +480,11 @@ pub fn load_recent_impl_commits(n: usize) -> Vec<ImplCommit> {
     let path = dex_path(IMPL_COMMITS_FILE);
     let content = match fs::read_to_string(&path) {
         Ok(c) => c,
-        Err(_) => return Vec::new(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(e) => {
+            eprintln!("Warning: failed to read {}: {}", IMPL_COMMITS_FILE, e);
+            return Vec::new();
+        }
     };
     let all: Vec<ImplCommit> = content
         .lines()

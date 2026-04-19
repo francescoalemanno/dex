@@ -63,7 +63,7 @@ pub fn app_header() {
         let _ = write!(stream, " ");
     }
     let _ = write!(stream, "{}", line1);
-    for _ in 0..(width - pad1 - line1.len()) {
+    for _ in 0..width.saturating_sub(pad1 + line1.len()) {
         let _ = write!(stream, " ");
     }
     let _ = writeln!(stream, "\u{2502}");
@@ -74,7 +74,7 @@ pub fn app_header() {
         let _ = write!(stream, " ");
     }
     let _ = write!(stream, "{}", line2);
-    for _ in 0..(width - pad2 - line2.len()) {
+    for _ in 0..width.saturating_sub(pad2 + line2.len()) {
         let _ = write!(stream, " ");
     }
     let _ = writeln!(stream, "\u{2502}");
@@ -219,7 +219,7 @@ pub fn prompt_multiline(msg: &str) -> String {
     for line in stdin.lock().lines() {
         match line {
             Ok(l) => {
-                if l.trim() == "." && !lines.is_empty() {
+                if l.trim() == "." {
                     break;
                 }
                 lines.push(l);
@@ -285,7 +285,9 @@ pub fn prompt_line(msg: &str, hint: &str) -> String {
     let _ = stream.flush();
 
     let mut input = String::new();
-    let _ = io::stdin().read_line(&mut input);
+    if io::stdin().read_line(&mut input).is_err() {
+        return String::new();
+    }
     input.trim().to_string()
 }
 

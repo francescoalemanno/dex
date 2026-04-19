@@ -104,11 +104,12 @@ fn slugify(text: &str) -> String {
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join("-");
-    if joined.len() > 40 {
-        joined[..40].trim_end_matches('-').to_string()
+    let trimmed = if joined.len() > 40 {
+        &joined[..40]
     } else {
-        joined
-    }
+        &joined
+    };
+    trimmed.trim_end_matches('-').to_string()
 }
 
 // ── Metric formatting ──
@@ -200,7 +201,7 @@ fn sorted_median(values: &[f64]) -> f64 {
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let mid = sorted.len() / 2;
     if sorted.len().is_multiple_of(2) {
-        (sorted[mid - 1] + sorted[mid]) / 2.0
+        sorted[mid - 1] + (sorted[mid] - sorted[mid - 1]) / 2.0
     } else {
         sorted[mid]
     }
