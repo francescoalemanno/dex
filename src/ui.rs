@@ -181,10 +181,7 @@ pub fn show_block(title: &str, content: &str) {
     );
     let _ = writeln!(stream);
     let _ = writeln!(stream, "{}", content);
-    write_dim(
-        &mut stream,
-        &format!("\u{2500}\u{2500} end \u{2500}\u{2500}"),
-    );
+    write_dim(&mut stream, "\u{2500}\u{2500} end \u{2500}\u{2500}");
     let _ = writeln!(stream);
     let _ = writeln!(stream);
 }
@@ -200,10 +197,7 @@ pub fn show_markdown(title: &str, md: &str) {
     let skin = MadSkin::default();
     let rendered = skin.term_text(md);
     let _ = write!(stream, "{}", rendered);
-    write_dim(
-        &mut stream,
-        &format!("\u{2500}\u{2500} end \u{2500}\u{2500}"),
-    );
+    write_dim(&mut stream, "\u{2500}\u{2500} end \u{2500}\u{2500}");
     let _ = writeln!(stream);
     let _ = writeln!(stream);
 }
