@@ -17,7 +17,7 @@ use crate::core::{
     load_config, load_feedbacks, read_dex_file, require_git_repo, reset_dex_runtime_artifacts,
     save_config, save_plan_request, seed_prompts, Config,
 };
-use crate::phases::{bare_phase, finalize_phase, impl_phase, plan_phase, review_phase};
+use crate::phases::{bare_phase, finalize_phase, impl_phase, plan_phase, resume_plan, review_phase};
 use crate::plan::validate_candidate_plan;
 use crate::runner::{kill_all_children, set_verbose, Runner};
 use crate::ui::{app_header, banner, err_msg, info};
@@ -146,16 +146,17 @@ struct ReviewCmd {
 #[argh(
     subcommand,
     name = "bare",
-    example = "Open-ended bare loop:\n  {command_name} 10 bare-request.txt"
+    example = "Open-ended bare loop:\n  {command_name} 10 bare-request.txt",
+    example = "Inline request:\n  {command_name} 10 \"explore the codebase and improve test coverage\""
 )]
 struct BareCmd {
     /// number of iterations
     #[argh(positional)]
     iterations: usize,
 
-    /// request file; it is re-read on every iteration
-    #[argh(positional)]
-    request_file: String,
+    /// request text or a file path containing the request; re-read every iteration
+    #[argh(positional, greedy)]
+    request: Vec<String>,
 }
 
 /// finalize a feature branch against a rebase target
@@ -308,8 +309,25 @@ fn main() {
     }
 
     if let Err(e) = require_git_repo() {
-        err_msg(&e);
-        exit(1);
+        if !std::io::stdin().is_terminal() {
+            err_msg(&e);
+            exit(1);
+        }
+        let choice = crate::ui::prompt_choice(
+            "No git repository found. Initialize one here?",
+            &["yes", "no"],
+        );
+        if choice == "no" {
+            err_msg("dex requires a git repository. Aborting.");
+            exit(1);
+        }
+        match git_trimmed_output(&["init"]) {
+            Ok(_) => info("Initialized git repository."),
+            Err(init_err) => {
+                err_msg(&format!("git init failed: {}", init_err));
+                exit(1);
+            }
+        }
     }
 
     app_header();
@@ -351,14 +369,21 @@ fn cmd_plan(runner: &Runner, cmd: PlanCmd) -> CmdResult {
 
     let plan_path = dex_path("plan.md");
     let plan_exists = Path::new(&plan_path).exists();
-    if plan_exists && !cmd.force {
-        return Err(CmdError::Failure(
-            "A plan already exists. Use `dex plan --force` to overwrite it.".into(),
-        ));
-    }
+
     if plan_exists && cmd.force {
         info("Clearing existing artifacts (plan, progress, feedbacks, reviews).");
         reset_dex_runtime_artifacts();
+    }
+
+    if plan_exists && !cmd.force {
+        match resume_plan(runner)? {
+            Some(_) => {
+                banner("DONE");
+                info("Plan saved.");
+                return Ok(());
+            }
+            None => return Err(CmdError::Cancelled),
+        }
     }
 
     let request = read_text_or_file(cmd.request, "request")?;
@@ -479,7 +504,28 @@ fn cmd_review(runner: &Runner, cmd: ReviewCmd) -> CmdResult {
 }
 
 fn cmd_bare(runner: &Runner, cmd: BareCmd) -> CmdResult {
-    bare_phase(runner, &cmd.request_file, cmd.iterations)?;
+    let raw = cmd.request.join(" ");
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err(CmdError::Failure(
+            "missing request; pass request text or a file path containing it.".into(),
+        ));
+    }
+
+    let request_file = if Path::new(raw).is_file() {
+        raw.to_string()
+    } else {
+        ensure_dex_dir();
+        let path = dex_path("bare_prompt.txt");
+        fs::write(&path, raw).map_err(|e| format!("write {}: {}", path, e))?;
+        info(&format!(
+            "Request persisted to {}. You can edit this file while iterations are running.",
+            path
+        ));
+        path
+    };
+
+    bare_phase(runner, &request_file, cmd.iterations)?;
 
     banner("DONE");
     info("Bare mode complete.");

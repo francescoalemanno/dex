@@ -17,6 +17,26 @@ use crate::ui::{
 
 // ── Phase 1: Planning ──
 
+pub fn resume_plan(r: &Runner) -> Result<Option<String>, String> {
+    let plan_path = dex_path("plan.md");
+    let plan = match read_dex_file("plan.md") {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+
+    banner("EXISTING PLAN");
+    show_markdown("Plan", &plan);
+
+    let request = read_dex_file("request.txt").unwrap_or_default();
+    let mut feedbacks = crate::core::load_feedbacks();
+
+    match plan_review_loop(&plan, &mut feedbacks)? {
+        PlanReviewResult::Accepted => Ok(Some(plan_path)),
+        PlanReviewResult::Rejected => Ok(None),
+        PlanReviewResult::Loop => run_planning_loop(r, request, feedbacks, plan_path),
+    }
+}
+
 pub fn plan_phase(
     r: &Runner,
     request: &str,
@@ -30,6 +50,58 @@ pub fn plan_phase(
     save_feedbacks(&feedbacks);
 
     run_planning_loop(r, request.to_string(), feedbacks, plan_path)
+}
+
+enum PlanReviewResult {
+    Accepted,
+    Rejected,
+    Loop,
+}
+
+fn plan_review_loop(
+    plan: &str,
+    feedbacks: &mut Vec<String>,
+) -> Result<PlanReviewResult, String> {
+    loop {
+        let choice = prompt_choice(
+            "Accept, edit, revise, or reject?",
+            &["accept", "edit", "revise", "reject"],
+        );
+        match choice.as_str() {
+            "accept" => {
+                info("Plan accepted!");
+                return Ok(PlanReviewResult::Accepted);
+            }
+            "reject" => {
+                warn("Plan rejected.");
+                return Ok(PlanReviewResult::Rejected);
+            }
+            "edit" => match edit_plan_in_editor(plan) {
+                Ok(Some(diff)) => {
+                    let feedback = format!(
+                        "user provided feedback in the form of a unified diff: \n\n{}",
+                        diff
+                    );
+                    feedbacks.push(feedback);
+                    save_feedbacks(feedbacks);
+                    return Ok(PlanReviewResult::Loop);
+                }
+                Ok(None) => {
+                    info("No changes detected in the plan.");
+                }
+                Err(e) => {
+                    err_msg(&format!("Editor error: {}", e));
+                }
+            },
+            "revise" => {
+                let feedback = prompt_multiline("Your revision feedback:");
+                feedbacks.push(feedback);
+                save_feedbacks(feedbacks);
+                return Ok(PlanReviewResult::Loop);
+            }
+            _ => {}
+        }
+    }
 }
 
 fn run_planning_loop(
@@ -86,45 +158,10 @@ fn run_planning_loop(
 
         show_markdown("Plan", &plan);
 
-        loop {
-            let choice = prompt_choice(
-                "Accept, edit, revise, or reject?",
-                &["accept", "edit", "revise", "reject"],
-            );
-            match choice.as_str() {
-                "accept" => {
-                    info("Plan accepted!");
-                    return Ok(Some(plan_path.clone()));
-                }
-                "reject" => {
-                    warn("Plan rejected.");
-                    return Ok(None);
-                }
-                "edit" => match edit_plan_in_editor(&plan) {
-                    Ok(Some(diff)) => {
-                        let feedback = format!(
-                            "user provided feedback in the form of a unified diff: \n\n{}",
-                            diff
-                        );
-                        feedbacks.push(feedback);
-                        save_feedbacks(&feedbacks);
-                        break;
-                    }
-                    Ok(None) => {
-                        info("No changes detected in the plan.");
-                    }
-                    Err(e) => {
-                        err_msg(&format!("Editor error: {}", e));
-                    }
-                },
-                "revise" => {
-                    let feedback = prompt_multiline("Your revision feedback:");
-                    feedbacks.push(feedback);
-                    save_feedbacks(&feedbacks);
-                    break;
-                }
-                _ => {}
-            }
+        match plan_review_loop(&plan, &mut feedbacks)? {
+            PlanReviewResult::Accepted => return Ok(Some(plan_path)),
+            PlanReviewResult::Rejected => return Ok(None),
+            PlanReviewResult::Loop => continue,
         }
     }
 }
