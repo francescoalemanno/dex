@@ -375,6 +375,14 @@ fn cmd_plan(runner: &Runner, cmd: PlanCmd) -> CmdResult {
         reset_dex_runtime_artifacts();
     }
 
+    let has_request = cmd.request.iter().any(|s| !s.trim().is_empty());
+
+    if plan_exists && !cmd.force && has_request {
+        return Err(CmdError::Failure(
+            "A plan already exists. Use `dex plan` to resume it, or `dex plan --force <request>` to overwrite.".into(),
+        ));
+    }
+
     if plan_exists && !cmd.force {
         match resume_plan(runner)? {
             Some(_) => {
