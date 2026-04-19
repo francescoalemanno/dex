@@ -36,7 +36,7 @@ Do NOT reject issues just because they existed before this branch — fix them a
 ### 3.3 Fix All Confirmed Issues
 1. Fix all CONFIRMED issues (all types: bugs, tests, smells, simplifications, docs, etc.)
 2. Run tests and linter to verify fixes — ALL tests must pass, ALL linter issues resolved
-3. Commit fixes: `git commit -m "fix: address code review findings"`
+3. ALWAYS commit fixes: `git commit -m "fix: address code review findings"`
 
 Do NOT introduce new features or refactoring beyond what the confirmed issues require.
 
