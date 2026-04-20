@@ -11,8 +11,7 @@ use crate::core::{
 use crate::plan::{all_tasks_done, next_open_task, plan_step_counts};
 use crate::runner::Runner;
 use crate::ui::{
-    banner, err_msg, info, phase_detail, prompt_choice, prompt_multiline, show_block,
-    show_markdown, warn,
+    banner, err_msg, info, phase_detail, prompt_choice, prompt_multiline, show_markdown, warn,
 };
 
 // ── Phase 1: Planning ──
@@ -132,7 +131,7 @@ fn run_planning_loop(
         }
 
         if let Some(questions) = read_dex_file("questions.md") {
-            show_block("Questions from CLI", &questions);
+            show_markdown("Questions from CLI", &questions);
             let answer = prompt_multiline("Your answers:");
             feedbacks.push(format!("Questions:\n{}\n\nAnswers:\n{}", questions, answer));
             save_feedbacks(&feedbacks);

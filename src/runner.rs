@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use termcolor::StandardStream;
 
 use crate::core::{CliConfig, Config, OutputFormat};
-use crate::ui::{err_msg, locked_stderr, phase_detail, show_block, warn, write_timestamp};
+use crate::ui::{err_msg, locked_stderr, phase_detail, warn, write_timestamp, show_markdown};
 
 static VERBOSE: AtomicBool = AtomicBool::new(false);
 
@@ -159,7 +159,7 @@ impl Runner {
         phase_detail("exec", &display);
 
         if is_verbose() {
-            show_block("Prompt", prompt);
+            show_markdown("Prompt", prompt);
         }
 
         let mut cmd = Command::new(&cfg.command);

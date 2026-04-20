@@ -172,20 +172,6 @@ pub fn write_dim(stream: &mut StandardStream, text: &str) {
     let _ = stream.reset();
 }
 
-pub fn show_block(title: &str, content: &str) {
-    let mut stream = locked_stderr();
-    let _ = writeln!(stream);
-    write_dim(
-        &mut stream,
-        &format!("\u{2500}\u{2500} {} \u{2500}\u{2500}", title),
-    );
-    let _ = writeln!(stream);
-    let _ = writeln!(stream, "{}", content);
-    write_dim(&mut stream, "\u{2500}\u{2500} end \u{2500}\u{2500}");
-    let _ = writeln!(stream);
-    let _ = writeln!(stream);
-}
-
 pub fn show_markdown(title: &str, md: &str) {
     let mut stream = locked_stderr();
     let _ = writeln!(stream);
