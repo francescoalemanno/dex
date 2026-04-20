@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use termcolor::StandardStream;
 
 use crate::core::{CliConfig, Config, OutputFormat};
-use crate::ui::{err_msg, locked_stderr, phase_detail, warn, write_timestamp, show_markdown};
+use crate::ui::{err_msg, locked_stderr, phase_detail, show_markdown, warn, write_timestamp};
 
 static VERBOSE: AtomicBool = AtomicBool::new(false);
 
