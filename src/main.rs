@@ -246,12 +246,6 @@ impl From<String> for CmdError {
 }
 
 // ── Main ──
-
-struct PreparedConfig {
-    config: Config,
-    cli_name: String,
-}
-
 struct ChildGuard;
 
 impl Drop for ChildGuard {
@@ -290,21 +284,22 @@ fn run_app() -> CmdResult {
 
     set_verbose(args.verbose);
     let prepared = prepare_config(&args)?;
-
-    let cli_override = args.cli.is_some();
-    let update_prompts = args.update_prompts;
-    let timeout_secs = args.timeout;
-
+    if args.cli.is_some() {
+        info(&format!("Default CLI set to {}.", prepared.cli));
+    }
     let command = match args.command {
         Some(cmd) => cmd,
-        None => return handle_no_command(&parsed.command_name, cli_override, &prepared),
+        None => {
+            print_help(&parsed.command_name);
+            return Ok(());
+        }
     };
 
-    let runner = bootstrap_runner(update_prompts, timeout_secs, &prepared)?;
+    let runner = bootstrap_runner(args.update_prompts, args.timeout, &prepared)?;
     dispatch_command(&runner, command)
 }
 
-fn prepare_config(args: &Args) -> Result<PreparedConfig, CmdError> {
+fn prepare_config(args: &Args) -> Result<Config, CmdError> {
     ensure_config();
     let mut config = load_config();
 
@@ -318,26 +313,13 @@ fn prepare_config(args: &Args) -> Result<PreparedConfig, CmdError> {
         save_config(&config);
     }
 
-    Ok(PreparedConfig { config, cli_name })
-}
-
-fn handle_no_command(
-    command_name: &str,
-    cli_override: bool,
-    prepared: &PreparedConfig,
-) -> CmdResult {
-    if cli_override {
-        info(&format!("Default CLI set to {}.", prepared.cli_name));
-    } else {
-        print_help(command_name);
-    }
-    Ok(())
+    Ok(config)
 }
 
 fn bootstrap_runner(
     update_prompts: bool,
     timeout_secs: u64,
-    prepared: &PreparedConfig,
+    prepared: &Config,
 ) -> Result<Runner, CmdError> {
     ensure_dex_dir();
     if update_prompts {
@@ -350,12 +332,7 @@ fn bootstrap_runner(
     ensure_repo_ready()?;
     app_header();
 
-    Runner::new(
-        &prepared.config,
-        &prepared.cli_name,
-        Duration::from_secs(timeout_secs),
-    )
-    .map_err(CmdError::Failure)
+    Runner::new(prepared, Duration::from_secs(timeout_secs)).map_err(CmdError::Failure)
 }
 
 fn ensure_repo_ready() -> CmdResult {

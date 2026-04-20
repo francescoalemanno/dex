@@ -126,14 +126,58 @@ fn user_config_root() -> PathBuf {
     PathBuf::from(".config")
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Config {
+    #[serde(default = "default_cli_name")]
+    pub cli: String,
+    #[serde(default = "default_cli_configs")]
+    pub clis: BTreeMap<String, CliConfig>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            cli: default_cli_name(),
+            clis: default_cli_configs(),
+        }
+    }
+}
 fn dex_config_path() -> PathBuf {
     user_config_root().join(DEX_CONFIG_DIR).join("config.json")
 }
 
-fn ensure_config_dir() {
+pub fn load_config() -> Config {
+    let path = dex_config_path();
+    match fs::read_to_string(&path) {
+        Ok(data) => {
+            let parsed: Config = serde_json::from_str(&data).unwrap_or_default();
+            let mut merged = Config::default();
+            if !parsed.cli.trim().is_empty() {
+                merged.cli = parsed.cli;
+            }
+            merged.clis.extend(parsed.clis);
+            merged
+        }
+        Err(_) => Config::default(),
+    }
+}
+
+pub fn save_config(cfg: &Config) {
     if let Some(parent) = dex_config_path().parent() {
         fs::create_dir_all(parent).ok();
     }
+    let data = serde_json::to_string_pretty(cfg).unwrap_or_default();
+    if let Err(e) = fs::write(dex_config_path(), format!("{}\n", data)) {
+        eprintln!("Error: failed to save config: {}", e);
+    }
+}
+
+pub fn ensure_config() {
+    let path = dex_config_path();
+    if path.exists() {
+        return;
+    }
+    save_config(&Config::default());
 }
 
 pub fn read_dex_file(name: &str) -> Option<String> {
@@ -328,55 +372,6 @@ fn default_cli_configs() -> BTreeMap<String, CliConfig> {
         ),
     );
     clis
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Config {
-    #[serde(default = "default_cli_name")]
-    pub cli: String,
-    #[serde(default = "default_cli_configs")]
-    pub clis: BTreeMap<String, CliConfig>,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Config {
-            cli: default_cli_name(),
-            clis: default_cli_configs(),
-        }
-    }
-}
-
-pub fn ensure_config() {
-    let path = dex_config_path();
-    if path.exists() {
-        return;
-    }
-    save_config(&Config::default());
-}
-
-pub fn load_config() -> Config {
-    let path = dex_config_path();
-    match fs::read_to_string(&path) {
-        Ok(data) => {
-            let parsed: Config = serde_json::from_str(&data).unwrap_or_default();
-            let mut merged = Config::default();
-            if !parsed.cli.trim().is_empty() {
-                merged.cli = parsed.cli;
-            }
-            merged.clis.extend(parsed.clis);
-            merged
-        }
-        Err(_) => Config::default(),
-    }
-}
-
-pub fn save_config(cfg: &Config) {
-    ensure_config_dir();
-    let data = serde_json::to_string_pretty(cfg).unwrap_or_default();
-    if let Err(e) = fs::write(dex_config_path(), format!("{}\n", data)) {
-        eprintln!("Error: failed to save config: {}", e);
-    }
 }
 
 pub fn git_trimmed_output(args: &[&str]) -> Result<String, String> {

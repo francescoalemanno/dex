@@ -88,13 +88,13 @@ enum StreamLine {
 }
 
 impl Runner {
-    pub fn new(config: &Config, name: &str, timeout: Duration) -> Result<Self, String> {
-        validate_cli_name(config, name)?;
+    pub fn new(config: &Config, timeout: Duration) -> Result<Self, String> {
+        validate_cli_name(config, &config.cli)?;
         let cli = config
             .clis
-            .get(name)
+            .get(&config.cli)
             .cloned()
-            .ok_or_else(|| format!("unknown CLI {:?}", name))?;
+            .ok_or_else(|| format!("unknown CLI {:?}", &config.cli))?;
         Ok(Runner {
             config: cli,
             timeout,
