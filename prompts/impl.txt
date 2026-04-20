@@ -41,7 +41,7 @@ STEP 2 — VALIDATE:
 
 STEP 3 — COMPLETE (after validation passes):
 - Edit `{{PlanPath}}` and change `- [ ]` to `- [x]` for each checkbox you completed in the current task section. If other sections also become satisfied as a direct consequence, mark them `- [x]` in this same edit to avoid extra loop iterations.
-- Commit all changes (code + updated plan) with message: `feat: <brief task description>\n\n<extended multi-line description>`.
+- Commit all changes (except the plan) with message: `feat: <brief task description>\n\n<extended multi-line description>`.
 - Check if any `- [ ]` checkboxes remain in markdown sections.
 - If NO more `- [ ]` checkboxes in the entire plan, STOP.
 - If more task sections have `- [ ]` checkboxes, STOP HERE — do not continue.
