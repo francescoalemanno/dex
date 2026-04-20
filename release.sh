@@ -73,7 +73,7 @@ if [[ "$confirm" != [yY] ]]; then
   echo "Aborted."
   exit 0
 fi
-
+git push
 git tag "$version"
 git push origin "$version"
 

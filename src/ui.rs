@@ -46,7 +46,7 @@ pub fn app_header() {
     let mut stream = locked_stderr();
     let line1 = "DEX v".to_owned() + REVISION;
     let line2 = "Agentic Orchestrator";
-    let width = line2.len() + 4; // padding
+    let width = line2.len().max(line1.len()) + 4; // padding
     let _ = writeln!(stream);
     let mut spec = ColorSpec::new();
     spec.set_fg(Some(Color::Cyan)).set_bold(true);
