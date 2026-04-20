@@ -361,7 +361,7 @@ fn walk_json(v: &Value, texts: &mut Vec<String>) {
     match v {
         Value::Object(map) => {
             for (k, child) in map {
-                if k == "text" {
+                if k == "text" || k == "thinking" {
                     if let Some(s) = child.as_str() {
                         texts.push(s.to_string());
                         continue;

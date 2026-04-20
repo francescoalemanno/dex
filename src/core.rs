@@ -301,17 +301,29 @@ fn default_cli_name() -> String {
 fn default_cli_configs() -> BTreeMap<String, CliConfig> {
     let mut clis = BTreeMap::new();
     clis.insert(
+        "amp".to_string(),
+        cli_config(
+            "amp",
+            &["--dangerously-allow-all", "-x", "--stream-json"],
+            true,
+            &[],
+            OutputFormat::JsonNd,
+        ),
+    );
+    clis.insert(
         "claude".to_string(),
         cli_config(
             "claude",
             &[
                 "--dangerously-skip-permissions",
                 "--allow-dangerously-skip-permissions",
+                "--output-format=stream-json",
+                "--verbose",
                 "-p",
             ],
             false,
             &[],
-            OutputFormat::Plain,
+            OutputFormat::JsonNd,
         ),
     );
     clis.insert(
@@ -569,6 +581,7 @@ mod tests {
         let cfg: Config = serde_json::from_str(r#"{"cli":"claude","base_ref":"main"}"#).unwrap();
 
         assert_eq!(cfg.cli, "claude");
+        assert!(cfg.clis.contains_key("amp"));
         assert!(cfg.clis.contains_key("gemini"));
     }
 

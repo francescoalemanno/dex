@@ -22,7 +22,7 @@ dex keeps the same philosophy: markdown plans, checkbox progress, and one task p
 - **Task progress is tracked programmatically.** Checkboxes are parsed, not vibed. dex knows exactly which task group is next and when everything is done.
 - **Failures don't need babysitting.** Transient crashes retry automatically with exponential backoff. An idle agent gets killed after a configurable timeout.
 - **Code review is built in, not bolted on.** Five specialized reviewers run in parallel, a fixer resolves confirmed issues, and focused rounds repeat until the codebase is clean, or until you've hit the cap.
-- **Any agent, same workflow.** Swap between seven supported coding CLIs with a flag. The orchestration stays identical.
+- **Any agent, same workflow.** Swap between eight supported coding CLIs with a flag. The orchestration stays identical.
 
 ## Quick start
 
@@ -52,7 +52,7 @@ cd dex
 cargo build --release
 ```
 
-You need at least one supported coding CLI installed (`opencode`, `claude`, `codex`, `gemini`, `droid`, `pi`, or `raijin`). You only need Rust if you're building dex from source.
+You need at least one supported coding CLI installed (`amp`, `opencode`, `claude`, `codex`, `gemini`, `droid`, `pi`, or `raijin`). You only need Rust if you're building dex from source.
 
 Then start with a plan:
 
@@ -252,6 +252,7 @@ The benchmark command must print metrics as `METRIC name=value` lines to stdout 
 
 | CLI | Key | Notes |
 |-----|-----|-------|
+| Amp | `amp` | Uses stdin with `--dangerously-allow-all -x`. |
 | OpenCode | `opencode` | Default. JSON output, auto-permissions. |
 | Claude | `claude` | Anthropic's CLI. Skips permissions. |
 | Codex | `codex` | OpenAI's CLI. Ephemeral, no sandbox. |
