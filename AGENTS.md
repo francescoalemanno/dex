@@ -3,3 +3,6 @@
 - ALWAYS use crossplatform solutions
 # Behaviour rules
 - NEVER call subagents or task tool
+# Coding style
+- avoid unnecessary abstractions and thin helpers
+- YAGNI aggressively
