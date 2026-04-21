@@ -6,6 +6,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
+use crate::ui::err_msg;
+
 const DEX_DIR: &str = ".dex";
 const DEX_PROMPTS_DIR: &str = ".dex/prompts";
 const DEX_CONFIG_DIR: &str = "dex";
@@ -126,19 +128,58 @@ fn user_config_root() -> PathBuf {
     PathBuf::from(".config")
 }
 
+pub fn dex_available_agents(clis: &BTreeMap<String, CliConfig>) -> Vec<String> {
+    clis.iter()
+        .filter_map(|(name, cli)| which::which(&cli.command).is_ok().then_some(name.clone()))
+        .collect()
+}
+
+pub fn validate_cli_name(clis: &BTreeMap<String, CliConfig>, name: &str) -> Result<(), String> {
+    let configured: Vec<String> = clis.keys().cloned().collect();
+    let configured_list = if configured.is_empty() {
+        "none".to_string()
+    } else {
+        configured.join(", ")
+    };
+    let cfg = clis.get(name).ok_or_else(|| {
+        format!(
+            "unknown CLI {:?}; configured agents: {}",
+            name, configured_list
+        )
+    })?;
+    if which::which(&cfg.command).is_err() {
+        return Err(format!(
+            "CLI {:?} is not available in PATH (command {:?} not found)",
+            name, cfg.command
+        ));
+    }
+    Ok(())
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default = "default_cli_name")]
     pub cli: String,
+    #[serde(default = "default_cli_timeout")]
+    pub timeout: u64,
     #[serde(default = "default_cli_configs")]
     pub clis: BTreeMap<String, CliConfig>,
 }
 
 impl Default for Config {
     fn default() -> Self {
+        let clis = default_cli_configs();
+        let mut cli = default_cli_name();
+        if let Some(name) = dex_available_agents(&clis).first() {
+            cli = name.clone();
+        } else if let Err(err) = validate_cli_name(&clis, &cli) {
+            err_msg("No Agentic CLI found, consider installing OpenCode.");
+            err_msg(&err);
+        }
+
         Config {
-            cli: default_cli_name(),
-            clis: default_cli_configs(),
+            cli,
+            timeout: default_cli_timeout(),
+            clis,
         }
     }
 }
@@ -147,6 +188,7 @@ fn dex_config_path() -> PathBuf {
 }
 
 pub fn load_config() -> Config {
+    ensure_config();
     let path = dex_config_path();
     match fs::read_to_string(&path) {
         Ok(data) => {
@@ -155,6 +197,7 @@ pub fn load_config() -> Config {
             if !parsed.cli.trim().is_empty() {
                 merged.cli = parsed.cli;
             }
+            merged.timeout = parsed.timeout;
             merged.clis.extend(parsed.clis);
             merged
         }
@@ -296,6 +339,10 @@ fn cli_config(
 
 fn default_cli_name() -> String {
     "opencode".to_string()
+}
+
+fn default_cli_timeout() -> u64 {
+    600
 }
 
 fn default_cli_configs() -> BTreeMap<String, CliConfig> {
@@ -581,8 +628,16 @@ mod tests {
         let cfg: Config = serde_json::from_str(r#"{"cli":"claude","base_ref":"main"}"#).unwrap();
 
         assert_eq!(cfg.cli, "claude");
+        assert_eq!(cfg.timeout, 600);
         assert!(cfg.clis.contains_key("amp"));
         assert!(cfg.clis.contains_key("gemini"));
+    }
+
+    #[test]
+    fn config_reads_timeout_from_json() {
+        let cfg: Config = serde_json::from_str(r#"{"timeout":42}"#).unwrap();
+
+        assert_eq!(cfg.timeout, 42);
     }
 
     fn git(dir: &std::path::Path, args: &[&str]) -> String {

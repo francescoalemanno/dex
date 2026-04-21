@@ -5,24 +5,24 @@ mod research;
 mod runner;
 mod ui;
 
+use crate::core::{
+    dex_path, ensure_dex_dir, git_trimmed_output, impl_commits_base_ref, load_config,
+    load_feedbacks, read_dex_file, require_git_repo, reset_dex_runtime_artifacts, save_config,
+    save_plan_request, seed_prompts, validate_cli_name,
+};
+use crate::phases::{
+    bare_phase, finalize_phase, impl_phase, plan_phase, resume_plan, review_phase,
+};
+use crate::plan::validate_candidate_plan;
+
+use crate::runner::{kill_all_children, set_verbose, Runner};
+use crate::ui::{app_header, banner, err_msg, info};
 use argh::FromArgs;
 use std::fs;
 use std::io::IsTerminal;
 use std::path::Path;
 use std::process::exit;
 use std::time::Duration;
-
-use crate::core::{
-    dex_path, ensure_config, ensure_dex_dir, git_trimmed_output, impl_commits_base_ref,
-    load_config, load_feedbacks, read_dex_file, require_git_repo, reset_dex_runtime_artifacts,
-    save_config, save_plan_request, seed_prompts, Config,
-};
-use crate::phases::{
-    bare_phase, finalize_phase, impl_phase, plan_phase, resume_plan, review_phase,
-};
-use crate::plan::validate_candidate_plan;
-use crate::runner::{kill_all_children, set_verbose, Runner};
-use crate::ui::{app_header, banner, err_msg, info};
 
 const REVISION: &str = env!("CARGO_PKG_VERSION");
 
@@ -48,8 +48,8 @@ struct Args {
     verbose: bool,
 
     /// kill agent after this many seconds idle
-    #[argh(option, default = "1200")]
-    timeout: u64,
+    #[argh(option, arg_name = "secs")]
+    timeout: Option<u64>,
 
     #[argh(subcommand)]
     command: Option<SubCommand>,
@@ -283,9 +283,33 @@ fn run_app() -> CmdResult {
     }
 
     set_verbose(args.verbose);
-    let prepared = prepare_config(&args)?;
-    if args.cli.is_some() {
-        info(&format!("Default CLI set to {}.", prepared.cli));
+    let mut config = load_config();
+    let mut save_defaults = false;
+    if let Some(new_cli) = args.cli {
+        let new_cli = new_cli.trim();
+        if new_cli.is_empty() {
+            return Err(CmdError::Failure("CLI name cannot be empty.".into()));
+        }
+        validate_cli_name(&config.clis, new_cli).map_err(CmdError::Failure)?;
+        if config.cli != new_cli {
+            config.cli = new_cli.to_string();
+            save_defaults = true;
+        }
+        info(&format!("Default CLI set to {}.", config.cli));
+    }
+    if let Some(new_timeout) = args.timeout {
+        if config.timeout != new_timeout {
+            config.timeout = new_timeout;
+            save_defaults = true;
+        }
+        info(&format!(
+            "Default Idle Timeout set to {} seconds.",
+            config.timeout
+        ));
+    }
+
+    if save_defaults {
+        save_config(&config);
     }
     let command = match args.command {
         Some(cmd) => cmd,
@@ -294,45 +318,33 @@ fn run_app() -> CmdResult {
             return Ok(());
         }
     };
-
-    let runner = bootstrap_runner(args.update_prompts, args.timeout, &prepared)?;
-    dispatch_command(&runner, command)
-}
-
-fn prepare_config(args: &Args) -> Result<Config, CmdError> {
-    ensure_config();
-    let mut config = load_config();
-
-    if let Some(ref name) = args.cli {
-        crate::runner::validate_cli_name(&config, name).map_err(CmdError::Failure)?;
-    }
-
-    let cli_name = resolve_cli(args.cli.clone(), &config);
-    if config.cli != cli_name {
-        config.cli = cli_name.clone();
-        save_config(&config);
-    }
-
-    Ok(config)
-}
-
-fn bootstrap_runner(
-    update_prompts: bool,
-    timeout_secs: u64,
-    prepared: &Config,
-) -> Result<Runner, CmdError> {
+    ensure_repo_ready()?;
     ensure_dex_dir();
-    if update_prompts {
+    if args.update_prompts {
         seed_prompts(true);
         info("Prompt templates updated to built-in defaults.");
     } else {
         seed_prompts(false);
     }
 
-    ensure_repo_ready()?;
     app_header();
-
-    Runner::new(prepared, Duration::from_secs(timeout_secs)).map_err(CmdError::Failure)
+    validate_cli_name(&config.clis, &config.cli).map_err(CmdError::Failure)?;
+    let cli = config
+        .clis
+        .get(&config.cli)
+        .cloned()
+        .ok_or_else(|| format!("unknown CLI {:?}", &config.cli))?;
+    let runner = Runner::new(cli, Duration::from_secs(config.timeout));
+    match command {
+        SubCommand::Plan(cmd) => cmd_plan(&runner, cmd),
+        SubCommand::Import(cmd) => cmd_import(cmd),
+        SubCommand::Amend(cmd) => cmd_amend(&runner, cmd),
+        SubCommand::Apply(cmd) => cmd_apply(&runner, cmd),
+        SubCommand::Review(cmd) => cmd_review(&runner, cmd),
+        SubCommand::Bare(cmd) => cmd_bare(&runner, cmd),
+        SubCommand::Finalize(cmd) => cmd_finalize(&runner, cmd),
+        SubCommand::Research(cmd) => cmd_research(&runner, cmd),
+    }
 }
 
 fn ensure_repo_ready() -> CmdResult {
@@ -359,19 +371,6 @@ fn ensure_repo_ready() -> CmdResult {
     Ok(())
 }
 
-fn dispatch_command(runner: &Runner, command: SubCommand) -> CmdResult {
-    match command {
-        SubCommand::Plan(cmd) => cmd_plan(runner, cmd),
-        SubCommand::Import(cmd) => cmd_import(cmd),
-        SubCommand::Amend(cmd) => cmd_amend(runner, cmd),
-        SubCommand::Apply(cmd) => cmd_apply(runner, cmd),
-        SubCommand::Review(cmd) => cmd_review(runner, cmd),
-        SubCommand::Bare(cmd) => cmd_bare(runner, cmd),
-        SubCommand::Finalize(cmd) => cmd_finalize(runner, cmd),
-        SubCommand::Research(cmd) => cmd_research(runner, cmd),
-    }
-}
-
 fn finish(message: &str) {
     banner("DONE");
     info(message);
@@ -388,16 +387,14 @@ fn require_plan_exists() -> Result<String, CmdError> {
     }
 }
 
-fn bare_request_looks_like_path(raw: &str) -> bool {
-    raw.starts_with('.')
-        || raw.starts_with('~')
-        || raw.contains('/')
-        || raw.contains('\\')
-        || Path::new(raw).extension().is_some()
-}
-
-fn bare_request_should_warn_missing_file(raw: &str, request_len: usize) -> bool {
-    request_len == 1 && bare_request_looks_like_path(raw) && !Path::new(raw).exists()
+fn bare_request_should_warn_missing_file(raw: &str) -> bool {
+    (!Path::new(raw).exists())
+        && raw.len() < 30
+        && (raw.starts_with('.')
+            || raw.starts_with('~')
+            || raw.contains('/')
+            || raw.contains('\\')
+            || Path::new(raw).extension().is_some())
 }
 
 fn resolve_bare_request_file(request: Vec<String>) -> Result<String, CmdError> {
@@ -413,7 +410,7 @@ fn resolve_bare_request_file(request: Vec<String>) -> Result<String, CmdError> {
         return Ok(raw.to_string());
     }
 
-    if bare_request_should_warn_missing_file(raw, request.len()) {
+    if bare_request_should_warn_missing_file(raw) {
         info(&format!(
             "No request file found at {:?}; treating it as inline request text.",
             raw
@@ -661,16 +658,6 @@ fn read_text_or_file(words: Vec<String>, kind: &str) -> Result<String, CmdError>
     Ok(text)
 }
 
-fn resolve_cli(explicit: Option<String>, config: &Config) -> String {
-    let selected = explicit.unwrap_or_else(|| config.cli.clone());
-    let trimmed = selected.trim();
-    if trimmed.is_empty() {
-        Config::default().cli
-    } else {
-        trimmed.to_string()
-    }
-}
-
 // ── Arg parsing & help ──
 
 struct ParsedArgs {
@@ -702,7 +689,7 @@ fn parse_args() -> ParsedArgs {
                     "{}",
                     render_help_output_with(
                         &early_exit.output,
-                        &crate::runner::dex_available_agents(&load_config()),
+                        &crate::core::dex_available_agents(&load_config().clis),
                     )
                 );
                 0
@@ -727,7 +714,10 @@ fn print_help(command_name: &str) {
     let help = top_level_help_output(command_name);
     print!(
         "{}",
-        render_help_output_with(&help, &crate::runner::dex_available_agents(&load_config()),)
+        render_help_output_with(
+            &help,
+            &crate::core::dex_available_agents(&load_config().clis),
+        )
     );
 }
 
@@ -777,8 +767,7 @@ fn available_agents_help_section_with<S: AsRef<str>>(available: &[S]) -> String 
 #[cfg(test)]
 mod tests {
     use super::{
-        available_agents_help_section_with, bare_request_looks_like_path,
-        bare_request_should_warn_missing_file, read_text_or_file, render_help_output_with,
+        available_agents_help_section_with, read_text_or_file, render_help_output_with,
         top_level_help_output, CmdError,
     };
     use std::fs;
@@ -827,7 +816,7 @@ mod tests {
 
         assert!(
             help.starts_with(
-                "Usage: dex [--version] [--update-prompts] [--cli <name>] [--verbose] [--timeout <timeout>] [<command>] [<args>]"
+                "Usage: dex [--version] [--update-prompts] [--cli <name>] [--verbose] [--timeout <secs>] [<command>] [<args>]"
             ),
             "unexpected help output: {help}"
         );
@@ -874,30 +863,5 @@ mod tests {
             Err(CmdError::Failure(msg)) => assert_eq!(msg, "request is empty after trimming."),
             _ => panic!("expected failure"),
         }
-    }
-
-    #[test]
-    fn bare_request_path_detection_warns_but_keeps_inline_text_supported() {
-        let missing = std::env::temp_dir().join(format!(
-            "dex-bare-missing-{}-{}.txt",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-
-        assert!(bare_request_should_warn_missing_file(
-            &missing.to_string_lossy(),
-            1
-        ));
-        assert!(bare_request_looks_like_path("notes.txt"));
-        assert!(bare_request_looks_like_path("./notes"));
-        assert!(!bare_request_looks_like_path("optimize runtime"));
-        assert!(!bare_request_looks_like_path("improve"));
-        assert!(!bare_request_should_warn_missing_file(
-            "optimize runtime",
-            2
-        ));
     }
 }

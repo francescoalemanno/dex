@@ -7,7 +7,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 use termcolor::StandardStream;
 
-use crate::core::{CliConfig, Config, OutputFormat};
+use crate::core::{CliConfig, OutputFormat};
 use crate::ui::{err_msg, locked_stderr, phase_detail, show_markdown, warn, write_timestamp};
 
 static VERBOSE: AtomicBool = AtomicBool::new(false);
@@ -44,37 +44,6 @@ pub fn kill_all_children() {
         let _ = child.kill();
     }
 }
-
-pub fn dex_available_agents(config: &Config) -> Vec<String> {
-    config
-        .clis
-        .iter()
-        .filter_map(|(name, cli)| which::which(&cli.command).is_ok().then_some(name.clone()))
-        .collect()
-}
-
-pub fn validate_cli_name(config: &Config, name: &str) -> Result<(), String> {
-    let configured: Vec<String> = config.clis.keys().cloned().collect();
-    let configured_list = if configured.is_empty() {
-        "none".to_string()
-    } else {
-        configured.join(", ")
-    };
-    let cfg = config.clis.get(name).ok_or_else(|| {
-        format!(
-            "unknown CLI {:?}; configured agents: {}",
-            name, configured_list
-        )
-    })?;
-    if which::which(&cfg.command).is_err() {
-        return Err(format!(
-            "CLI {:?} is not available in PATH (command {:?} not found)",
-            name, cfg.command
-        ));
-    }
-    Ok(())
-}
-
 pub struct Runner {
     config: CliConfig,
     timeout: Duration,
@@ -88,18 +57,12 @@ enum StreamLine {
 }
 
 impl Runner {
-    pub fn new(config: &Config, timeout: Duration) -> Result<Self, String> {
-        validate_cli_name(config, &config.cli)?;
-        let cli = config
-            .clis
-            .get(&config.cli)
-            .cloned()
-            .ok_or_else(|| format!("unknown CLI {:?}", &config.cli))?;
-        Ok(Runner {
-            config: cli,
+    pub fn new(config: CliConfig, timeout: Duration) -> Self {
+        Runner {
+            config,
             timeout,
             label: String::new(),
-        })
+        }
     }
 
     fn cfg(&self) -> &CliConfig {
