@@ -286,17 +286,18 @@ fn build_recent_history(results: &[ResearchEntry], metric_unit: &str) -> String 
 }
 
 fn build_dead_ends(results: &[ResearchEntry]) -> String {
-    let dead: Vec<&ResearchEntry> = results
+    let recent_dead: Vec<&ResearchEntry> = results
         .iter()
+        .rev()
         .filter(|r| r.status == "discard" || r.status == "crash" || r.status == "checks_failed")
+        .take(MAX_DEAD_ENDS)
         .collect();
-    let start = dead.len().saturating_sub(MAX_DEAD_ENDS);
-    let recent_dead = &dead[start..];
     if recent_dead.is_empty() {
         return String::new();
     }
     recent_dead
-        .iter()
+        .into_iter()
+        .rev()
         .map(|r| format!("- {} ({})", r.description, r.status))
         .collect::<Vec<_>>()
         .join("\n")
@@ -380,9 +381,10 @@ fn load_state() -> Result<Option<ResearchState>, String> {
             serde_json::from_str(line).map_err(|e| format!("parse jsonl line: {}", e))?;
         if val.get("type").and_then(|v| v.as_str()) == Some("config") {
             config = Some(serde_json::from_value(val).map_err(|e| format!("parse config: {}", e))?);
-        } else {
-            results.push(serde_json::from_value(val).map_err(|e| format!("parse result: {}", e))?);
+            continue;
         }
+
+        results.push(serde_json::from_value(val).map_err(|e| format!("parse result: {}", e))?);
     }
 
     Ok(config.map(|config| ResearchState { config, results }))

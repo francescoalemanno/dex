@@ -80,12 +80,7 @@ impl Runner {
                     delay.as_secs_f64()
                 ));
                 std::thread::sleep(delay);
-                let next = delay * 8;
-                delay = if next > Duration::from_secs(3600) {
-                    Duration::from_secs(3600)
-                } else {
-                    next
-                };
+                delay = (delay * 8).min(Duration::from_secs(3600));
             }
             match self.run_once(prompt) {
                 Ok(()) => return Ok(()),
@@ -123,9 +118,7 @@ impl Runner {
         cmd.stderr(Stdio::piped());
 
         if !cfg.env.is_empty() {
-            for (k, v) in &cfg.env {
-                cmd.env(k, v);
-            }
+            cmd.envs(&cfg.env);
         }
 
         if cfg.stdin {
@@ -267,17 +260,19 @@ fn display_plain(text: &str, start: Instant, label: &str) -> bool {
 
 fn display_jsonnd(text: &str, start: Instant, label: &str) -> bool {
     if let Ok(obj) = serde_json::from_str::<Value>(text) {
-        if let Some(map) = obj.as_object() {
-            let mut texts: Vec<String> = Vec::new();
-            walk_json(&Value::Object(map.clone()), &mut texts);
-            if !texts.is_empty() {
-                let mut stream = locked_stderr();
-                for t in &texts {
-                    write_prefix(&mut stream, start, label);
-                    let _ = writeln!(stream, " {}", t);
-                }
-                return true;
+        if !obj.is_object() {
+            return false;
+        }
+
+        let mut texts = Vec::new();
+        walk_json(&obj, &mut texts);
+        if !texts.is_empty() {
+            let mut stream = locked_stderr();
+            for t in &texts {
+                write_prefix(&mut stream, start, label);
+                let _ = writeln!(stream, " {}", t);
             }
+            return true;
         }
         return false;
     }
@@ -285,32 +280,38 @@ fn display_jsonnd(text: &str, start: Instant, label: &str) -> bool {
 }
 
 fn display_pi_jsonnd(text: &str, start: Instant, label: &str) -> bool {
-    if let Ok(obj) = serde_json::from_str::<Value>(text) {
-        if obj.get("type").and_then(|v| v.as_str()) == Some("message_end") {
-            if let Some(msg) = obj.get("message") {
-                if msg.get("role").and_then(|v| v.as_str()) == Some("assistant") {
-                    if let Some(content) = msg.get("content").and_then(|v| v.as_array()) {
-                        let mut displayed = false;
-                        let mut stream = locked_stderr();
-                        for item in content {
-                            if item.get("type").and_then(|v| v.as_str()) == Some("text") {
-                                if let Some(s) = item.get("text").and_then(|v| v.as_str()) {
-                                    if !s.is_empty() {
-                                        write_prefix(&mut stream, start, label);
-                                        let _ = writeln!(stream, " {}", s);
-                                        displayed = true;
-                                    }
-                                }
-                            }
-                        }
-                        return displayed;
-                    }
-                }
-            }
-        }
+    let Ok(obj) = serde_json::from_str::<Value>(text) else {
+        return display_plain(text, start, label);
+    };
+    if obj.get("type").and_then(|v| v.as_str()) != Some("message_end") {
         return false;
     }
-    display_plain(text, start, label)
+    let Some(content) = obj
+        .get("message")
+        .filter(|msg| msg.get("role").and_then(|v| v.as_str()) == Some("assistant"))
+        .and_then(|msg| msg.get("content"))
+        .and_then(|v| v.as_array())
+    else {
+        return false;
+    };
+
+    let mut displayed = false;
+    let mut stream = locked_stderr();
+    for item in content {
+        if item.get("type").and_then(|v| v.as_str()) != Some("text") {
+            continue;
+        }
+        let Some(text) = item.get("text").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if text.is_empty() {
+            continue;
+        }
+        write_prefix(&mut stream, start, label);
+        let _ = writeln!(stream, " {}", text);
+        displayed = true;
+    }
+    displayed
 }
 
 fn walk_json(v: &Value, texts: &mut Vec<String>) {

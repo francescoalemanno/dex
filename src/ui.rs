@@ -239,7 +239,11 @@ pub fn prompt_choice(msg: &str, choices: &[&str]) -> String {
                 return choices[num - 1].to_lowercase();
             }
         }
-        if let Some(choice) = choices.iter().find(|choice| choice.to_lowercase() == ans) {
+        if let Some(choice) = choices
+            .iter()
+            .copied()
+            .find(|choice| choice.eq_ignore_ascii_case(&ans))
+        {
             return choice.to_lowercase();
         }
         eprintln!("Invalid choice, try again.");

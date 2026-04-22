@@ -61,10 +61,10 @@ fn template_engine() -> Handlebars<'static> {
 
     for (name, builtin_content) in BUILTIN_TEMPLATES {
         let path = PathBuf::from(DEX_PROMPTS_DIR).join(name);
-        let content = match fs::read_to_string(&path) {
-            Ok(content) if !content.trim().is_empty() => content,
-            _ => builtin_content.to_string(),
-        };
+        let content = fs::read_to_string(&path)
+            .ok()
+            .filter(|content| !content.trim().is_empty())
+            .unwrap_or_else(|| builtin_content.to_string());
         hbs.register_template_string(name, content)
             .unwrap_or_else(|e| panic!("template {}: {}", name, e));
     }
@@ -146,13 +146,17 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         let clis = default_cli_configs();
-        let mut cli = default_cli_name();
-        if let Some(name) = dex_available_agents(&clis).first() {
-            cli = name.clone();
-        } else if let Err(err) = validate_cli_name(&clis, &cli) {
-            err_msg("No Agentic CLI found, consider installing OpenCode.");
-            err_msg(&err);
-        }
+        let cli = match dex_available_agents(&clis).first() {
+            Some(name) => name.clone(),
+            None => {
+                let cli = default_cli_name();
+                if let Err(err) = validate_cli_name(&clis, &cli) {
+                    err_msg("No Agentic CLI found, consider installing OpenCode.");
+                    err_msg(&err);
+                }
+                cli
+            }
+        };
 
         Config {
             cli,

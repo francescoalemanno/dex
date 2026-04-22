@@ -20,9 +20,8 @@ const IMPLEMENTATION_STALEMATE_LIMIT: usize = 4;
 
 pub fn resume_plan(r: &Runner) -> Result<Option<String>, String> {
     let plan_path = dex_path("plan.md");
-    let plan = match read_dex_file("plan.md") {
-        Some(p) => p,
-        None => return Ok(None),
+    let Some(plan) = read_dex_file("plan.md") else {
+        return Ok(None);
     };
 
     banner("EXISTING PLAN");
@@ -222,35 +221,24 @@ pub fn impl_phase(r: &Runner, plan_path: &str) -> Result<(), String> {
     let mut iteration = 1;
     let mut unchanged_iterations = 0;
     loop {
-        let task = next_open_task(plan_path)?;
-        let task = match task {
-            Some(t) => t,
-            None => {
-                info("All tasks complete!");
-                return Ok(());
-            }
+        let Some(task) = next_open_task(plan_path)? else {
+            info("All tasks complete!");
+            return Ok(());
         };
 
         let (plan_steps_open, plan_steps_total) = plan_step_counts(plan_path)?;
-        let header = {
-            let header = task.header.trim();
-            if header.is_empty() {
-                "(unnamed task)".to_string()
-            } else {
-                let label = header.trim_start_matches('#').trim();
-                if label.is_empty() {
-                    "(unnamed task)".to_string()
-                } else {
-                    label.to_string()
-                }
-            }
+        let header = task.header.trim().trim_start_matches('#').trim();
+        let header = if header.is_empty() {
+            "(unnamed task)"
+        } else {
+            header
         };
         let iteration_detail = format!(
             "{} of {} plan steps remaining",
             plan_steps_open, plan_steps_total
         );
         phase_detail(&format!("Iteration {}", iteration), &iteration_detail);
-        phase_detail("Job", &header);
+        phase_detail("Job", header);
 
         let commit_history = impl_commit_history_summary().unwrap_or_default();
         let state_a = git_head().ok();
