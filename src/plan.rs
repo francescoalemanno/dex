@@ -10,16 +10,8 @@ pub struct TaskGroup {
 }
 
 impl TaskGroup {
-    pub fn is_complete(&self) -> bool {
-        self.open == 0
-    }
-
     pub fn body(&self) -> String {
         self.lines.join("\n")
-    }
-
-    fn has_checkboxes(&self) -> bool {
-        self.open + self.done > 0
     }
 }
 
@@ -28,7 +20,7 @@ fn push_group(groups: &mut Vec<TaskGroup>, mut group: TaskGroup) {
         group.lines.pop();
     }
 
-    if group.has_checkboxes() {
+    if group.open + group.done > 0 {
         groups.push(group);
     }
 }
@@ -85,7 +77,7 @@ pub fn plan_step_counts(path: &str) -> Result<(usize, usize), String> {
 
 pub fn next_open_task(path: &str) -> Result<Option<TaskGroup>, String> {
     let groups = parse_plan(path)?;
-    Ok(groups.into_iter().find(|g| !g.is_complete()))
+    Ok(groups.into_iter().find(|g| g.open > 0))
 }
 
 pub fn validate_candidate_plan(path: &str) -> Result<(), String> {
@@ -134,14 +126,14 @@ mod tests {
         assert!(groups[1].body().contains("**Files:**"));
         assert!(groups[1].body().contains("- Modify: `src/db.rs`"));
         assert!(groups[1].body().contains("Some notes here."));
-        assert!(!groups[1].is_complete());
+        assert!(groups[1].open > 0);
 
         assert_eq!(groups[2].header, "### Task 2: Build API");
         assert_eq!(groups[2].open, 3);
         assert_eq!(groups[2].done, 0);
 
         assert_eq!(groups[3].header, "## Documentation");
-        assert!(groups[3].is_complete());
+        assert_eq!(groups[3].open, 0);
     }
 
     #[test]
@@ -155,7 +147,7 @@ mod tests {
         let plan = "## Done\n- [x] a\n- [x] b\n";
         let groups = parse_tasks(plan);
         assert_eq!(groups.len(), 1);
-        assert!(groups[0].is_complete());
+        assert_eq!(groups[0].open, 0);
     }
 
     #[test]

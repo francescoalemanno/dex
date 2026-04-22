@@ -216,20 +216,6 @@ fn edit_plan_in_editor(plan: &str) -> Result<Option<String>, String> {
 
 // ── Phase 2: Implementation ──
 
-fn format_task_label(header: &str) -> String {
-    let header = header.trim();
-    if header.is_empty() {
-        return "(unnamed task)".to_string();
-    }
-
-    let label = header.trim_start_matches('#').trim();
-    if label.is_empty() {
-        "(unnamed task)".to_string()
-    } else {
-        label.to_string()
-    }
-}
-
 pub fn impl_phase(r: &Runner, plan_path: &str) -> Result<(), String> {
     banner("IMPLEMENTATION");
 
@@ -246,7 +232,19 @@ pub fn impl_phase(r: &Runner, plan_path: &str) -> Result<(), String> {
         };
 
         let (plan_steps_open, plan_steps_total) = plan_step_counts(plan_path)?;
-        let header = format_task_label(&task.header);
+        let header = {
+            let header = task.header.trim();
+            if header.is_empty() {
+                "(unnamed task)".to_string()
+            } else {
+                let label = header.trim_start_matches('#').trim();
+                if label.is_empty() {
+                    "(unnamed task)".to_string()
+                } else {
+                    label.to_string()
+                }
+            }
+        };
         let iteration_detail = format!(
             "{} of {} plan steps remaining",
             plan_steps_open, plan_steps_total
@@ -474,6 +472,7 @@ fn run_review_fanout(
 
     let mut all_clean = true;
     let mut issues = Vec::new();
+    let clean_review_re = regex::Regex::new(r"(?i)[-*]\s*(zero|no)\s+(findings|issues)").unwrap();
 
     for rv in reviewers {
         let review = read_dex_file(&format!("review-{}.md", rv.name));
@@ -483,7 +482,7 @@ fn run_review_fanout(
                 all_clean = false;
             }
             Some(review) => {
-                if is_clean_review(&review) {
+                if clean_review_re.is_match(&review) {
                     info(&format!("[{}] ZERO ISSUES", rv.name));
                 } else {
                     err_msg(&format!("[{}] issues found", rv.name));
@@ -522,54 +521,32 @@ fn run_fixer(r: &Runner, plan_path: &str, base_ref: &str, issues: &[String]) -> 
     Ok(())
 }
 
-fn is_clean_review(review: &str) -> bool {
-    let re = regex::Regex::new(r"(?i)[-*]\s*(zero|no)\s+(findings|issues)").unwrap();
-    re.is_match(review)
-}
-
 // ── Bare Mode ──
-
-enum BareRequestFile {
-    Ready(String),
-    Missing,
-    Empty,
-}
-
-fn read_bare_request_file(path: &str) -> Result<BareRequestFile, String> {
-    let request = match fs::read_to_string(path) {
-        Ok(request) => request,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BareRequestFile::Missing),
-        Err(e) => return Err(format!("read bare request {:?}: {}", path, e)),
-    };
-
-    let request = request.trim().to_string();
-    if request.is_empty() {
-        return Ok(BareRequestFile::Empty);
-    }
-
-    Ok(BareRequestFile::Ready(request))
-}
 
 pub fn bare_phase(r: &Runner, request_file: &str, max_iterations: usize) -> Result<(), String> {
     banner("BARE");
     for iteration in 1..=max_iterations {
         phase_detail("iteration", &format!("{}/{}", iteration, max_iterations));
-        let request = match read_bare_request_file(request_file)? {
-            BareRequestFile::Ready(request) => request,
-            BareRequestFile::Missing => {
+        let request = match fs::read_to_string(request_file) {
+            Ok(request) => {
+                let request = request.trim().to_string();
+                if request.is_empty() {
+                    info(&format!(
+                        "Bare loop stopped: request file {:?} is empty after trimming.",
+                        request_file
+                    ));
+                    return Ok(());
+                }
+                request
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 info(&format!(
                     "Bare loop stopped: request file {:?} is missing.",
                     request_file
                 ));
                 return Ok(());
             }
-            BareRequestFile::Empty => {
-                info(&format!(
-                    "Bare loop stopped: request file {:?} is empty after trimming.",
-                    request_file
-                ));
-                return Ok(());
-            }
+            Err(e) => return Err(format!("read bare request {:?}: {}", request_file, e)),
         };
 
         let p = render_prompt("bare.txt", &serde_json::json!({"Request": request}));
@@ -631,11 +608,16 @@ pub fn finalize_phase(r: &Runner, plan_path: &str, finalize_target: &str) -> Res
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        format_task_label, is_clean_review, read_bare_request_file, BareRequestFile, Reviewers,
-    };
+    use super::Reviewers;
+    use regex::Regex;
     use std::fs;
     use std::path::PathBuf;
+
+    enum BareRequestState {
+        Ready(String),
+        Missing,
+        Empty,
+    }
 
     fn write_temp_file(contents: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
@@ -648,6 +630,41 @@ mod tests {
         ));
         fs::write(&path, contents).unwrap();
         path
+    }
+
+    fn clean_review_re() -> Regex {
+        Regex::new(r"(?i)[-*]\s*(zero|no)\s+(findings|issues)").unwrap()
+    }
+
+    fn bare_request_state(path: &str) -> Result<BareRequestState, String> {
+        let request = match fs::read_to_string(path) {
+            Ok(request) => request,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(BareRequestState::Missing);
+            }
+            Err(e) => return Err(format!("read bare request {:?}: {}", path, e)),
+        };
+
+        let request = request.trim().to_string();
+        if request.is_empty() {
+            Ok(BareRequestState::Empty)
+        } else {
+            Ok(BareRequestState::Ready(request))
+        }
+    }
+
+    fn format_header_for_display(header: &str) -> String {
+        let header = header.trim();
+        if header.is_empty() {
+            "(unnamed task)".to_string()
+        } else {
+            let label = header.trim_start_matches('#').trim();
+            if label.is_empty() {
+                "(unnamed task)".to_string()
+            } else {
+                label.to_string()
+            }
+        }
     }
 
     #[test]
@@ -664,41 +681,43 @@ mod tests {
 
     #[test]
     fn is_clean_review_accepts_variations() {
-        assert!(is_clean_review("- ZERO FINDINGS"));
-        assert!(is_clean_review("- zero findings"));
-        assert!(is_clean_review("- Zero Findings"));
-        assert!(is_clean_review("* No issues"));
-        assert!(is_clean_review("- No findings"));
-        assert!(is_clean_review("* ZERO ISSUES"));
-        assert!(is_clean_review("  - zero  findings  "));
+        let re = clean_review_re();
+        assert!(re.is_match("- ZERO FINDINGS"));
+        assert!(re.is_match("- zero findings"));
+        assert!(re.is_match("- Zero Findings"));
+        assert!(re.is_match("* No issues"));
+        assert!(re.is_match("- No findings"));
+        assert!(re.is_match("* ZERO ISSUES"));
+        assert!(re.is_match("  - zero  findings  "));
     }
 
     #[test]
     fn is_clean_review_rejects_dirty() {
-        assert!(!is_clean_review("Found 3 issues"));
-        assert!(!is_clean_review("Some problems detected"));
-        assert!(!is_clean_review(""));
+        let re = clean_review_re();
+        assert!(!re.is_match("Found 3 issues"));
+        assert!(!re.is_match("Some problems detected"));
+        assert!(!re.is_match(""));
     }
 
     #[test]
     fn bare_request_file_is_trimmed() {
         let path = write_temp_file("  hello from file  \n");
-        let request = read_bare_request_file(path.to_str().unwrap());
+        let request = bare_request_state(path.to_str().unwrap());
         let _ = fs::remove_file(&path);
 
         assert!(matches!(
             request.unwrap(),
-            BareRequestFile::Ready(request) if request == "hello from file"
+            BareRequestState::Ready(request) if request == "hello from file"
         ));
     }
 
     #[test]
     fn bare_request_file_stops_on_empty_trimmed_content() {
         let path = write_temp_file(" \n\t ");
-        let request = read_bare_request_file(path.to_str().unwrap());
+        let request = bare_request_state(path.to_str().unwrap());
         let _ = fs::remove_file(&path);
 
-        assert!(matches!(request.unwrap(), BareRequestFile::Empty));
+        assert!(matches!(request.unwrap(), BareRequestState::Empty));
     }
 
     #[test]
@@ -713,18 +732,18 @@ mod tests {
         ));
 
         assert!(matches!(
-            read_bare_request_file(path.to_str().unwrap()).unwrap(),
-            BareRequestFile::Missing
+            bare_request_state(path.to_str().unwrap()).unwrap(),
+            BareRequestState::Missing
         ));
     }
 
     #[test]
     fn format_task_label_strips_markdown_heading_prefix() {
         assert_eq!(
-            format_task_label("### Task 2: Build API"),
+            format_header_for_display("### Task 2: Build API"),
             "Task 2: Build API"
         );
-        assert_eq!(format_task_label("## Overview"), "Overview");
-        assert_eq!(format_task_label(""), "(unnamed task)");
+        assert_eq!(format_header_for_display("## Overview"), "Overview");
+        assert_eq!(format_header_for_display(""), "(unnamed task)");
     }
 }

@@ -5,10 +5,10 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
-use termcolor::StandardStream;
+use termcolor::{ColorSpec, StandardStream, WriteColor};
 
 use crate::core::{CliConfig, OutputFormat};
-use crate::ui::{err_msg, locked_stderr, phase_detail, show_markdown, warn, write_timestamp};
+use crate::ui::{err_msg, locked_stderr, phase_detail, show_markdown, warn};
 
 static VERBOSE: AtomicBool = AtomicBool::new(false);
 
@@ -248,7 +248,11 @@ fn write_prefix(stream: &mut StandardStream, start: Instant, label: &str) {
     let h = d.as_secs() / 3600;
     let m = (d.as_secs() % 3600) / 60;
     let s = d.as_secs() % 60;
-    write_timestamp(stream, &format!("[{:02}:{:02}:{:02}]", h, m, s));
+    let mut spec = ColorSpec::new();
+    spec.set_dimmed(true);
+    let _ = stream.set_color(&spec);
+    let _ = write!(stream, "[{:02}:{:02}:{:02}]", h, m, s);
+    let _ = stream.reset();
     if !label.is_empty() {
         let _ = write!(stream, " [{}]", label);
     }

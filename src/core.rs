@@ -60,19 +60,15 @@ fn template_engine() -> Handlebars<'static> {
     );
 
     for (name, builtin_content) in BUILTIN_TEMPLATES {
-        let content = load_user_prompt(name).unwrap_or_else(|| builtin_content.to_string());
+        let path = PathBuf::from(DEX_PROMPTS_DIR).join(name);
+        let content = match fs::read_to_string(&path) {
+            Ok(content) if !content.trim().is_empty() => content,
+            _ => builtin_content.to_string(),
+        };
         hbs.register_template_string(name, content)
             .unwrap_or_else(|e| panic!("template {}: {}", name, e));
     }
     hbs
-}
-
-fn load_user_prompt(name: &str) -> Option<String> {
-    let path = PathBuf::from(DEX_PROMPTS_DIR).join(name);
-    match fs::read_to_string(&path) {
-        Ok(content) if !content.trim().is_empty() => Some(content),
-        _ => None,
-    }
 }
 
 pub fn seed_prompts(force: bool) {
@@ -108,24 +104,6 @@ pub fn dex_path(name: &str) -> String {
         .join(name)
         .to_string_lossy()
         .to_string()
-}
-
-fn user_config_root() -> PathBuf {
-    if let Some(path) = std::env::var_os("XDG_CONFIG_HOME") {
-        return PathBuf::from(path);
-    }
-    if cfg!(windows) {
-        if let Some(path) = std::env::var_os("APPDATA") {
-            return PathBuf::from(path);
-        }
-        if let Some(path) = std::env::var_os("USERPROFILE") {
-            return PathBuf::from(path).join("AppData").join("Roaming");
-        }
-    }
-    if let Some(path) = std::env::var_os("HOME") {
-        return PathBuf::from(path).join(".config");
-    }
-    PathBuf::from(".config")
 }
 
 pub fn dex_available_agents(clis: &BTreeMap<String, CliConfig>) -> Vec<String> {
@@ -184,7 +162,22 @@ impl Default for Config {
     }
 }
 fn dex_config_path() -> PathBuf {
-    user_config_root().join(DEX_CONFIG_DIR).join("config.json")
+    let root = if let Some(path) = std::env::var_os("XDG_CONFIG_HOME") {
+        PathBuf::from(path)
+    } else if cfg!(windows) {
+        if let Some(path) = std::env::var_os("APPDATA") {
+            PathBuf::from(path)
+        } else if let Some(path) = std::env::var_os("USERPROFILE") {
+            PathBuf::from(path).join("AppData").join("Roaming")
+        } else {
+            PathBuf::from(".config")
+        }
+    } else if let Some(path) = std::env::var_os("HOME") {
+        PathBuf::from(path).join(".config")
+    } else {
+        PathBuf::from(".config")
+    };
+    root.join(DEX_CONFIG_DIR).join("config.json")
 }
 
 pub fn load_config() -> Config {

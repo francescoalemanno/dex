@@ -274,8 +274,46 @@ fn main() {
 }
 
 fn run_app() -> CmdResult {
-    let parsed = parse_args();
-    let args = parsed.args;
+    let strings: Vec<String> = std::env::args_os()
+        .map(|s| s.into_string())
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap_or_else(|arg| {
+            eprintln!("Invalid utf8: {}", arg.to_string_lossy());
+            exit(1)
+        });
+
+    if strings.is_empty() {
+        eprintln!("No program name, argv is empty");
+        exit(1);
+    }
+
+    let command_name = Path::new(&strings[0])
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(&strings[0])
+        .to_string();
+    let argv: Vec<&str> = strings.iter().map(String::as_str).collect();
+    let args = Args::from_args(&[&command_name], &argv[1..]).unwrap_or_else(|early_exit| {
+        exit(match early_exit.status {
+            Ok(()) => {
+                print!(
+                    "{}",
+                    render_help_output_with(
+                        &early_exit.output,
+                        &crate::core::dex_available_agents(&load_config().clis),
+                    )
+                );
+                0
+            }
+            Err(()) => {
+                eprintln!(
+                    "{}\nRun {} --help for more information.",
+                    early_exit.output, command_name
+                );
+                1
+            }
+        })
+    });
 
     if args.version {
         println!("dex {}", REVISION);
@@ -314,7 +352,20 @@ fn run_app() -> CmdResult {
     let command = match args.command {
         Some(cmd) => cmd,
         None => {
-            print_help(&parsed.command_name);
+            let help = match Args::from_args(&[&command_name], &["--help"]) {
+                Err(early_exit) => {
+                    debug_assert!(early_exit.status.is_ok());
+                    early_exit.output
+                }
+                Ok(_) => unreachable!("--help should trigger an early exit"),
+            };
+            print!(
+                "{}",
+                render_help_output_with(
+                    &help,
+                    &crate::core::dex_available_agents(&load_config().clis),
+                )
+            );
             return Ok(());
         }
     };
@@ -630,83 +681,6 @@ fn read_text_or_file(words: Vec<String>, kind: &str) -> Result<String, CmdError>
     Ok(text)
 }
 
-// ── Arg parsing & help ──
-
-struct ParsedArgs {
-    args: Args,
-    command_name: String,
-}
-
-fn parse_args() -> ParsedArgs {
-    let strings: Vec<String> = std::env::args_os()
-        .map(|s| s.into_string())
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap_or_else(|arg| {
-            eprintln!("Invalid utf8: {}", arg.to_string_lossy());
-            exit(1)
-        });
-
-    if strings.is_empty() {
-        eprintln!("No program name, argv is empty");
-        exit(1);
-    }
-
-    let command_name = Path::new(&strings[0])
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or(&strings[0])
-        .to_string();
-    let args: Vec<&str> = strings.iter().map(String::as_str).collect();
-
-    let parsed = Args::from_args(&[&command_name], &args[1..]).unwrap_or_else(|early_exit| {
-        exit(match early_exit.status {
-            Ok(()) => {
-                print!(
-                    "{}",
-                    render_help_output_with(
-                        &early_exit.output,
-                        &crate::core::dex_available_agents(&load_config().clis),
-                    )
-                );
-                0
-            }
-            Err(()) => {
-                eprintln!(
-                    "{}\nRun {} --help for more information.",
-                    early_exit.output, command_name
-                );
-                1
-            }
-        })
-    });
-
-    ParsedArgs {
-        args: parsed,
-        command_name,
-    }
-}
-
-fn print_help(command_name: &str) {
-    let help = top_level_help_output(command_name);
-    print!(
-        "{}",
-        render_help_output_with(
-            &help,
-            &crate::core::dex_available_agents(&load_config().clis),
-        )
-    );
-}
-
-fn top_level_help_output(command_name: &str) -> String {
-    match Args::from_args(&[command_name], &["--help"]) {
-        Err(early_exit) => {
-            debug_assert!(early_exit.status.is_ok());
-            early_exit.output
-        }
-        Ok(_) => unreachable!("--help should trigger an early exit"),
-    }
-}
-
 fn render_help_output_with<S: AsRef<str>>(base_help: &str, available: &[S]) -> String {
     let mut output = String::with_capacity(base_help.len() + 64);
     output.push_str(base_help);
@@ -730,7 +704,8 @@ fn render_help_output_with<S: AsRef<str>>(base_help: &str, available: &[S]) -> S
 
 #[cfg(test)]
 mod tests {
-    use super::{read_text_or_file, render_help_output_with, top_level_help_output, CmdError};
+    use super::{read_text_or_file, render_help_output_with, Args, CmdError};
+    use argh::FromArgs;
     use std::fs;
     use std::path::PathBuf;
 
@@ -773,7 +748,13 @@ mod tests {
 
     #[test]
     fn top_level_help_output_matches_real_help() {
-        let help = top_level_help_output("dex");
+        let help = match Args::from_args(&["dex"], &["--help"]) {
+            Err(early_exit) => {
+                debug_assert!(early_exit.status.is_ok());
+                early_exit.output
+            }
+            Ok(_) => unreachable!("--help should trigger an early exit"),
+        };
 
         assert!(
             help.starts_with(
