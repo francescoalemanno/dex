@@ -216,20 +216,6 @@ fn edit_plan_in_editor(plan: &str) -> Result<Option<String>, String> {
 
 // ── Phase 2: Implementation ──
 
-fn format_task_label(header: &str) -> String {
-    let header = header.trim();
-    if header.is_empty() {
-        return "(unnamed task)".to_string();
-    }
-
-    let label = header.trim_start_matches('#').trim();
-    if label.is_empty() {
-        "(unnamed task)".to_string()
-    } else {
-        label.to_string()
-    }
-}
-
 pub fn impl_phase(r: &Runner, plan_path: &str) -> Result<(), String> {
     banner("IMPLEMENTATION");
 
@@ -246,7 +232,19 @@ pub fn impl_phase(r: &Runner, plan_path: &str) -> Result<(), String> {
         };
 
         let (plan_steps_open, plan_steps_total) = plan_step_counts(plan_path)?;
-        let header = format_task_label(&task.header);
+        let header = {
+            let header = task.header.trim();
+            if header.is_empty() {
+                "(unnamed task)".to_string()
+            } else {
+                let label = header.trim_start_matches('#').trim();
+                if label.is_empty() {
+                    "(unnamed task)".to_string()
+                } else {
+                    label.to_string()
+                }
+            }
+        };
         let iteration_detail = format!(
             "{} of {} plan steps remaining",
             plan_steps_open, plan_steps_total
@@ -326,17 +324,6 @@ impl Reviewers {
     }
 }
 
-fn load_reviewers() -> Reviewers {
-    let path = dex_path("reviewers.json");
-    match fs::read_to_string(&path) {
-        Ok(data) => serde_json::from_str(&data).unwrap_or_else(|_| {
-            warn("Invalid .dex/reviewers.json, falling back to defaults.");
-            Reviewers::builtin()
-        }),
-        Err(_) => Reviewers::builtin(),
-    }
-}
-
 const MAX_FOCUSED_ROUNDS: usize = 3;
 
 struct PreparedReview {
@@ -351,7 +338,16 @@ pub fn review_phase(
     base_ref: &str,
     parallel: Option<usize>,
 ) -> Result<(), String> {
-    let reviewers = load_reviewers();
+    let reviewers = {
+        let path = dex_path("reviewers.json");
+        match fs::read_to_string(&path) {
+            Ok(data) => serde_json::from_str(&data).unwrap_or_else(|_| {
+                warn("Invalid .dex/reviewers.json, falling back to defaults.");
+                Reviewers::builtin()
+            }),
+            Err(_) => Reviewers::builtin(),
+        }
+    };
 
     let issues = run_review_fanout(
         r,
@@ -411,24 +407,10 @@ fn run_review_fanout(
     ));
 
     for rv in reviewers {
-        remove_dex_file(&review_output_name(&rv.name));
+        remove_dex_file(&format!("review-{}.md", rv.name));
     }
 
-    let prepared = prepare_review_jobs(plan_path, base_ref, reviewers);
-    run_review_batches(r, &prepared, parallel.unwrap_or(reviewers.len()).max(1));
-    collect_review_issues(reviewers)
-}
-
-fn review_output_name(role_name: &str) -> String {
-    format!("review-{}.md", role_name)
-}
-
-fn prepare_review_jobs(
-    plan_path: &str,
-    base_ref: &str,
-    reviewers: &[ReviewRole],
-) -> Vec<PreparedReview> {
-    reviewers
+    let prepared: Vec<PreparedReview> = reviewers
         .iter()
         .map(|rv| PreparedReview {
             prompt: render_prompt(
@@ -439,74 +421,68 @@ fn prepare_review_jobs(
                     "RoleName": rv.name,
                     "RoleScope": rv.scope,
                     "RolePrompt": rv.prompt,
-                    "ReviewName": review_output_name(&rv.name),
+                    "ReviewName": format!("review-{}.md", rv.name),
                 }),
             ),
             role_name: rv.name.clone(),
             role_scope: rv.scope.clone(),
         })
-        .collect()
-}
-
-fn run_review_batches(r: &Runner, prepared: &[PreparedReview], max_concurrent: usize) {
-    for batch in prepared.chunks(max_concurrent) {
-        run_review_batch(r, batch);
-    }
-}
-
-fn run_review_batch(r: &Runner, batch: &[PreparedReview]) {
-    let handles: Vec<_> = batch
-        .iter()
-        .map(|review| {
-            info(&format!(
-                "[parallel:{}] running {} review",
-                review.role_name, review.role_scope
-            ));
-
-            let runner = r.labeled(&review.role_name);
-            let prompt = review.prompt.clone();
-            let role_name = review.role_name.clone();
-            let role_scope = review.role_scope.clone();
-            std::thread::spawn(move || {
-                let result = runner.run(&prompt);
-                match &result {
-                    Ok(()) => info(&format!(
-                        "[parallel:{}] done {} review (exit=0)",
-                        role_name, role_scope
-                    )),
-                    Err(_) => err_msg(&format!(
-                        "[parallel:{}] done {} review (exit=1)",
-                        role_name, role_scope
-                    )),
-                }
-                result
-            })
-        })
         .collect();
 
-    for (review, handle) in batch.iter().zip(handles) {
-        if handle.join().is_err() {
-            err_msg(&format!(
-                "[parallel:{}] review thread panicked",
-                review.role_name
-            ));
+    let max_concurrent = parallel.unwrap_or(reviewers.len()).max(1);
+    for batch in prepared.chunks(max_concurrent) {
+        let handles: Vec<_> = batch
+            .iter()
+            .map(|review| {
+                info(&format!(
+                    "[parallel:{}] running {} review",
+                    review.role_name, review.role_scope
+                ));
+
+                let runner = r.labeled(&review.role_name);
+                let prompt = review.prompt.clone();
+                let role_name = review.role_name.clone();
+                let role_scope = review.role_scope.clone();
+                std::thread::spawn(move || {
+                    let result = runner.run(&prompt);
+                    match &result {
+                        Ok(()) => info(&format!(
+                            "[parallel:{}] done {} review (exit=0)",
+                            role_name, role_scope
+                        )),
+                        Err(_) => err_msg(&format!(
+                            "[parallel:{}] done {} review (exit=1)",
+                            role_name, role_scope
+                        )),
+                    }
+                    result
+                })
+            })
+            .collect();
+
+        for (review, handle) in batch.iter().zip(handles) {
+            if handle.join().is_err() {
+                err_msg(&format!(
+                    "[parallel:{}] review thread panicked",
+                    review.role_name
+                ));
+            }
         }
     }
-}
 
-fn collect_review_issues(reviewers: &[ReviewRole]) -> Option<Vec<String>> {
     let mut all_clean = true;
     let mut issues = Vec::new();
+    let clean_review_re = regex::Regex::new(r"(?i)[-*]\s*(zero|no)\s+(findings|issues)").unwrap();
 
     for rv in reviewers {
-        let review = read_dex_file(&review_output_name(&rv.name));
+        let review = read_dex_file(&format!("review-{}.md", rv.name));
         match review {
             None => {
                 warn(&format!("Reviewer {:?} produced no output", rv.name));
                 all_clean = false;
             }
             Some(review) => {
-                if is_clean_review(&review) {
+                if clean_review_re.is_match(&review) {
                     info(&format!("[{}] ZERO ISSUES", rv.name));
                 } else {
                     err_msg(&format!("[{}] issues found", rv.name));
@@ -545,54 +521,32 @@ fn run_fixer(r: &Runner, plan_path: &str, base_ref: &str, issues: &[String]) -> 
     Ok(())
 }
 
-fn is_clean_review(review: &str) -> bool {
-    let re = regex::Regex::new(r"(?i)[-*]\s*(zero|no)\s+(findings|issues)").unwrap();
-    re.is_match(review)
-}
-
 // ── Bare Mode ──
-
-enum BareRequestFile {
-    Ready(String),
-    Missing,
-    Empty,
-}
-
-fn read_bare_request_file(path: &str) -> Result<BareRequestFile, String> {
-    let request = match fs::read_to_string(path) {
-        Ok(request) => request,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BareRequestFile::Missing),
-        Err(e) => return Err(format!("read bare request {:?}: {}", path, e)),
-    };
-
-    let request = request.trim().to_string();
-    if request.is_empty() {
-        return Ok(BareRequestFile::Empty);
-    }
-
-    Ok(BareRequestFile::Ready(request))
-}
 
 pub fn bare_phase(r: &Runner, request_file: &str, max_iterations: usize) -> Result<(), String> {
     banner("BARE");
     for iteration in 1..=max_iterations {
         phase_detail("iteration", &format!("{}/{}", iteration, max_iterations));
-        let request = match read_bare_request_file(request_file)? {
-            BareRequestFile::Ready(request) => request,
-            BareRequestFile::Missing => {
+        let request = match fs::read_to_string(request_file) {
+            Ok(request) => {
+                let request = request.trim().to_string();
+                if request.is_empty() {
+                    info(&format!(
+                        "Bare loop stopped: request file {:?} is empty after trimming.",
+                        request_file
+                    ));
+                    return Ok(());
+                }
+                request
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 info(&format!(
                     "Bare loop stopped: request file {:?} is missing.",
                     request_file
                 ));
                 return Ok(());
             }
-            BareRequestFile::Empty => {
-                info(&format!(
-                    "Bare loop stopped: request file {:?} is empty after trimming.",
-                    request_file
-                ));
-                return Ok(());
-            }
+            Err(e) => return Err(format!("read bare request {:?}: {}", request_file, e)),
         };
 
         let p = render_prompt("bare.txt", &serde_json::json!({"Request": request}));
@@ -608,9 +562,27 @@ pub fn bare_phase(r: &Runner, request_file: &str, max_iterations: usize) -> Resu
 pub fn finalize_phase(r: &Runner, plan_path: &str, finalize_target: &str) -> Result<(), String> {
     banner("FINALIZE");
 
-    let branch = current_branch()?;
-    let finalize_target = resolve_finalize_target(finalize_target)?;
-    let commits_ahead = commit_count_ahead(&finalize_target)?;
+    let branch = git_trimmed_output(&["symbolic-ref", "--short", "HEAD"])?;
+    if branch.is_empty() {
+        return Err(
+            "finalize requires a named branch (detached HEAD is not supported)".to_string(),
+        );
+    }
+
+    let finalize_target = finalize_target.trim();
+    if finalize_target.is_empty() {
+        return Err(
+            "finalize requires a rebase target: dex --finalize <target-for-rebase>".to_string(),
+        );
+    }
+
+    git_trimmed_output(&["rev-parse", "--verify", finalize_target])?;
+
+    let range = format!("{}..HEAD", finalize_target);
+    let count = git_trimmed_output(&["rev-list", "--count", &range])?;
+    let commits_ahead = count
+        .parse::<u64>()
+        .map_err(|e| format!("parse git rev-list count {:?}: {}", count, e))?;
     if commits_ahead == 0 {
         return Err(format!(
             "finalize: branch {:?} has no commits to finalize relative to {:?}; run this on your feature branch or choose a different target",
@@ -634,42 +606,18 @@ pub fn finalize_phase(r: &Runner, plan_path: &str, finalize_target: &str) -> Res
     Ok(())
 }
 
-fn current_branch() -> Result<String, String> {
-    let branch = git_trimmed_output(&["symbolic-ref", "--short", "HEAD"])?;
-    if branch.is_empty() {
-        return Err(
-            "finalize requires a named branch (detached HEAD is not supported)".to_string(),
-        );
-    }
-    Ok(branch)
-}
-
-fn resolve_finalize_target(finalize_target: &str) -> Result<String, String> {
-    if finalize_target.trim().is_empty() {
-        return Err(
-            "finalize requires a rebase target: dex --finalize <target-for-rebase>".to_string(),
-        );
-    }
-
-    git_trimmed_output(&["rev-parse", "--verify", finalize_target])?;
-    Ok(finalize_target.to_string())
-}
-
-fn commit_count_ahead(finalize_target: &str) -> Result<u64, String> {
-    let range = format!("{}..HEAD", finalize_target);
-    let count = git_trimmed_output(&["rev-list", "--count", &range])?;
-    count
-        .parse::<u64>()
-        .map_err(|e| format!("parse git rev-list count {:?}: {}", count, e))
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        format_task_label, is_clean_review, read_bare_request_file, BareRequestFile, Reviewers,
-    };
+    use super::Reviewers;
+    use regex::Regex;
     use std::fs;
     use std::path::PathBuf;
+
+    enum BareRequestState {
+        Ready(String),
+        Missing,
+        Empty,
+    }
 
     fn write_temp_file(contents: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
@@ -682,6 +630,41 @@ mod tests {
         ));
         fs::write(&path, contents).unwrap();
         path
+    }
+
+    fn clean_review_re() -> Regex {
+        Regex::new(r"(?i)[-*]\s*(zero|no)\s+(findings|issues)").unwrap()
+    }
+
+    fn bare_request_state(path: &str) -> Result<BareRequestState, String> {
+        let request = match fs::read_to_string(path) {
+            Ok(request) => request,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(BareRequestState::Missing);
+            }
+            Err(e) => return Err(format!("read bare request {:?}: {}", path, e)),
+        };
+
+        let request = request.trim().to_string();
+        if request.is_empty() {
+            Ok(BareRequestState::Empty)
+        } else {
+            Ok(BareRequestState::Ready(request))
+        }
+    }
+
+    fn format_header_for_display(header: &str) -> String {
+        let header = header.trim();
+        if header.is_empty() {
+            "(unnamed task)".to_string()
+        } else {
+            let label = header.trim_start_matches('#').trim();
+            if label.is_empty() {
+                "(unnamed task)".to_string()
+            } else {
+                label.to_string()
+            }
+        }
     }
 
     #[test]
@@ -698,41 +681,43 @@ mod tests {
 
     #[test]
     fn is_clean_review_accepts_variations() {
-        assert!(is_clean_review("- ZERO FINDINGS"));
-        assert!(is_clean_review("- zero findings"));
-        assert!(is_clean_review("- Zero Findings"));
-        assert!(is_clean_review("* No issues"));
-        assert!(is_clean_review("- No findings"));
-        assert!(is_clean_review("* ZERO ISSUES"));
-        assert!(is_clean_review("  - zero  findings  "));
+        let re = clean_review_re();
+        assert!(re.is_match("- ZERO FINDINGS"));
+        assert!(re.is_match("- zero findings"));
+        assert!(re.is_match("- Zero Findings"));
+        assert!(re.is_match("* No issues"));
+        assert!(re.is_match("- No findings"));
+        assert!(re.is_match("* ZERO ISSUES"));
+        assert!(re.is_match("  - zero  findings  "));
     }
 
     #[test]
     fn is_clean_review_rejects_dirty() {
-        assert!(!is_clean_review("Found 3 issues"));
-        assert!(!is_clean_review("Some problems detected"));
-        assert!(!is_clean_review(""));
+        let re = clean_review_re();
+        assert!(!re.is_match("Found 3 issues"));
+        assert!(!re.is_match("Some problems detected"));
+        assert!(!re.is_match(""));
     }
 
     #[test]
     fn bare_request_file_is_trimmed() {
         let path = write_temp_file("  hello from file  \n");
-        let request = read_bare_request_file(path.to_str().unwrap());
+        let request = bare_request_state(path.to_str().unwrap());
         let _ = fs::remove_file(&path);
 
         assert!(matches!(
             request.unwrap(),
-            BareRequestFile::Ready(request) if request == "hello from file"
+            BareRequestState::Ready(request) if request == "hello from file"
         ));
     }
 
     #[test]
     fn bare_request_file_stops_on_empty_trimmed_content() {
         let path = write_temp_file(" \n\t ");
-        let request = read_bare_request_file(path.to_str().unwrap());
+        let request = bare_request_state(path.to_str().unwrap());
         let _ = fs::remove_file(&path);
 
-        assert!(matches!(request.unwrap(), BareRequestFile::Empty));
+        assert!(matches!(request.unwrap(), BareRequestState::Empty));
     }
 
     #[test]
@@ -747,18 +732,18 @@ mod tests {
         ));
 
         assert!(matches!(
-            read_bare_request_file(path.to_str().unwrap()).unwrap(),
-            BareRequestFile::Missing
+            bare_request_state(path.to_str().unwrap()).unwrap(),
+            BareRequestState::Missing
         ));
     }
 
     #[test]
     fn format_task_label_strips_markdown_heading_prefix() {
         assert_eq!(
-            format_task_label("### Task 2: Build API"),
+            format_header_for_display("### Task 2: Build API"),
             "Task 2: Build API"
         );
-        assert_eq!(format_task_label("## Overview"), "Overview");
-        assert_eq!(format_task_label(""), "(unnamed task)");
+        assert_eq!(format_header_for_display("## Overview"), "Overview");
+        assert_eq!(format_header_for_display(""), "(unnamed task)");
     }
 }

@@ -5,19 +5,15 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
-use termcolor::StandardStream;
+use termcolor::{ColorSpec, StandardStream, WriteColor};
 
 use crate::core::{CliConfig, OutputFormat};
-use crate::ui::{err_msg, locked_stderr, phase_detail, show_markdown, warn, write_timestamp};
+use crate::ui::{err_msg, locked_stderr, phase_detail, show_markdown, warn};
 
 static VERBOSE: AtomicBool = AtomicBool::new(false);
 
 pub fn set_verbose(v: bool) {
     VERBOSE.store(v, Ordering::Relaxed);
-}
-
-fn is_verbose() -> bool {
-    VERBOSE.load(Ordering::Relaxed)
 }
 
 static CHILDREN: Mutex<Vec<Arc<SharedChild>>> = Mutex::new(Vec::new());
@@ -65,10 +61,6 @@ impl Runner {
         }
     }
 
-    fn cfg(&self) -> &CliConfig {
-        &self.config
-    }
-
     pub fn labeled(&self, label: &str) -> Self {
         Runner {
             config: self.config.clone(),
@@ -107,7 +99,7 @@ impl Runner {
     }
 
     fn run_once(&self, prompt: &str) -> Result<(), String> {
-        let cfg = self.cfg();
+        let cfg = &self.config;
         let mut args = cfg.args.clone();
         if !cfg.stdin {
             args.push(prompt.to_string());
@@ -121,7 +113,7 @@ impl Runner {
         };
         phase_detail("exec", &display);
 
-        if is_verbose() {
+        if VERBOSE.load(Ordering::Relaxed) {
             show_markdown("Prompt", prompt);
         }
 
@@ -198,7 +190,12 @@ impl Runner {
         loop {
             match rx.recv_timeout(self.timeout) {
                 Ok(StreamLine::Stdout(text)) => {
-                    if process_stdout_line(&text, start, &self.label, cfg.output_format) {
+                    let displayed = match cfg.output_format {
+                        OutputFormat::Plain => display_plain(&text, start, &self.label),
+                        OutputFormat::JsonNd => display_jsonnd(&text, start, &self.label),
+                        OutputFormat::PiJsonNd => display_pi_jsonnd(&text, start, &self.label),
+                    };
+                    if displayed {
                         last_display = Instant::now();
                     } else if last_display.elapsed() >= Duration::from_secs(60) {
                         let mut stream = locked_stderr();
@@ -251,17 +248,13 @@ fn write_prefix(stream: &mut StandardStream, start: Instant, label: &str) {
     let h = d.as_secs() / 3600;
     let m = (d.as_secs() % 3600) / 60;
     let s = d.as_secs() % 60;
-    write_timestamp(stream, &format!("[{:02}:{:02}:{:02}]", h, m, s));
+    let mut spec = ColorSpec::new();
+    spec.set_dimmed(true);
+    let _ = stream.set_color(&spec);
+    let _ = write!(stream, "[{:02}:{:02}:{:02}]", h, m, s);
+    let _ = stream.reset();
     if !label.is_empty() {
         let _ = write!(stream, " [{}]", label);
-    }
-}
-
-fn process_stdout_line(text: &str, start: Instant, label: &str, format: OutputFormat) -> bool {
-    match format {
-        OutputFormat::Plain => display_plain(text, start, label),
-        OutputFormat::JsonNd => display_jsonnd(text, start, label),
-        OutputFormat::PiJsonNd => display_pi_jsonnd(text, start, label),
     }
 }
 
