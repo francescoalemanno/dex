@@ -218,17 +218,10 @@ pub fn ensure_config() {
 
 pub fn read_dex_file(name: &str) -> Option<String> {
     let path = dex_path(name);
-    match fs::read_to_string(&path) {
-        Ok(content) => {
-            let trimmed = content.trim().to_string();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed)
-            }
-        }
-        Err(_) => None,
-    }
+    fs::read_to_string(&path).ok().and_then(|content| {
+        let trimmed = content.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    })
 }
 
 pub fn remove_dex_file(name: &str) {
@@ -275,12 +268,11 @@ pub fn reset_dex_runtime_artifacts() {
 
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_file() {
-            if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
-                if name.starts_with("review-") && name.ends_with(".md") {
-                    fs::remove_file(path).ok();
-                }
-            }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if path.is_file() && name.starts_with("review-") && name.ends_with(".md") {
+            fs::remove_file(path).ok();
         }
     }
 }
@@ -317,15 +309,14 @@ fn cli_config(
     env: &[(&str, &str)],
     output_format: OutputFormat,
 ) -> CliConfig {
-    let mut env_map = BTreeMap::new();
-    for (key, value) in env {
-        env_map.insert((*key).to_string(), (*value).to_string());
-    }
     CliConfig {
         command: command.to_string(),
         args: args.iter().map(|arg| (*arg).to_string()).collect(),
         stdin,
-        env: env_map,
+        env: env
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+            .collect(),
         output_format,
     }
 }

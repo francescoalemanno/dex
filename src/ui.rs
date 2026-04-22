@@ -202,16 +202,11 @@ pub fn prompt_multiline(msg: &str) -> String {
 
     let stdin = io::stdin();
     let mut lines: Vec<String> = Vec::new();
-    for line in stdin.lock().lines() {
-        match line {
-            Ok(l) => {
-                if l.trim() == "." {
-                    break;
-                }
-                lines.push(l);
-            }
-            Err(_) => break,
+    for line in stdin.lock().lines().map_while(Result::ok) {
+        if line.trim() == "." {
+            break;
         }
+        lines.push(line);
     }
     lines.join("\n")
 }
@@ -239,18 +234,13 @@ pub fn prompt_choice(msg: &str, choices: &[&str]) -> String {
             continue;
         }
         let ans = input.trim().to_lowercase();
-        // Accept by number
         if let Ok(num) = ans.parse::<usize>() {
-            if num >= 1 && num <= choices.len() {
+            if (1..=choices.len()).contains(&num) {
                 return choices[num - 1].to_lowercase();
             }
         }
-        // Accept by name
-        for c in choices {
-            let cl = c.to_lowercase();
-            if cl == ans {
-                return cl;
-            }
+        if let Some(choice) = choices.iter().find(|choice| choice.to_lowercase() == ans) {
+            return choice.to_lowercase();
         }
         eprintln!("Invalid choice, try again.");
     }

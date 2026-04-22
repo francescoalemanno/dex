@@ -41,7 +41,7 @@ pub fn parse_tasks(content: &str) -> Vec<TaskGroup> {
         done: 0,
     };
 
-    for line in content.split('\n') {
+    for line in content.lines() {
         let trimmed = line.trim();
 
         if heading_re.is_match(trimmed) {
@@ -57,10 +57,9 @@ pub fn parse_tasks(content: &str) -> Vec<TaskGroup> {
 
         cur.lines.push(line.to_string());
         if let Some(caps) = checkbox_re.captures(line) {
-            if &caps[2] == " " {
-                cur.open += 1;
-            } else {
-                cur.done += 1;
+            match &caps[2] {
+                " " => cur.open += 1,
+                _ => cur.done += 1,
             }
         }
     }

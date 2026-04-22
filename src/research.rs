@@ -166,29 +166,31 @@ fn parse_metric_lines(output: &str) -> Vec<(String, f64)> {
     let mut metrics = Vec::new();
     for caps in re.captures_iter(output) {
         let name = caps[1].to_string();
-        if let Ok(value) = caps[2].parse::<f64>() {
-            if value.is_finite() {
-                if let Some(pos) = metrics.iter().position(|(n, _)| n == &name) {
-                    metrics[pos].1 = value;
-                } else {
-                    metrics.push((name, value));
-                }
-            }
+        let Ok(value) = caps[2].parse::<f64>() else {
+            continue;
+        };
+        if !value.is_finite() {
+            continue;
+        }
+        if let Some((_, existing)) = metrics
+            .iter_mut()
+            .find(|(metric_name, _)| metric_name == &name)
+        {
+            *existing = value;
+        } else {
+            metrics.push((name, value));
         }
     }
     metrics
 }
 
 fn extract_primary_metric(outcome: &BenchmarkOutcome, metric_name: &str) -> Option<f64> {
-    for (name, value) in &outcome.metrics {
-        if name == metric_name {
-            return Some(*value);
-        }
-    }
-    if metric_name == "duration_s" {
-        return Some(outcome.duration_secs);
-    }
-    None
+    outcome
+        .metrics
+        .iter()
+        .find(|(name, _)| name == metric_name)
+        .map(|(_, value)| *value)
+        .or_else(|| (metric_name == "duration_s").then_some(outcome.duration_secs))
 }
 
 // ── Statistics ──
