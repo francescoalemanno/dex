@@ -326,17 +326,6 @@ impl Reviewers {
     }
 }
 
-fn load_reviewers() -> Reviewers {
-    let path = dex_path("reviewers.json");
-    match fs::read_to_string(&path) {
-        Ok(data) => serde_json::from_str(&data).unwrap_or_else(|_| {
-            warn("Invalid .dex/reviewers.json, falling back to defaults.");
-            Reviewers::builtin()
-        }),
-        Err(_) => Reviewers::builtin(),
-    }
-}
-
 const MAX_FOCUSED_ROUNDS: usize = 3;
 
 struct PreparedReview {
@@ -351,7 +340,16 @@ pub fn review_phase(
     base_ref: &str,
     parallel: Option<usize>,
 ) -> Result<(), String> {
-    let reviewers = load_reviewers();
+    let reviewers = {
+        let path = dex_path("reviewers.json");
+        match fs::read_to_string(&path) {
+            Ok(data) => serde_json::from_str(&data).unwrap_or_else(|_| {
+                warn("Invalid .dex/reviewers.json, falling back to defaults.");
+                Reviewers::builtin()
+            }),
+            Err(_) => Reviewers::builtin(),
+        }
+    };
 
     let issues = run_review_fanout(
         r,
@@ -411,24 +409,10 @@ fn run_review_fanout(
     ));
 
     for rv in reviewers {
-        remove_dex_file(&review_output_name(&rv.name));
+        remove_dex_file(&format!("review-{}.md", rv.name));
     }
 
-    let prepared = prepare_review_jobs(plan_path, base_ref, reviewers);
-    run_review_batches(r, &prepared, parallel.unwrap_or(reviewers.len()).max(1));
-    collect_review_issues(reviewers)
-}
-
-fn review_output_name(role_name: &str) -> String {
-    format!("review-{}.md", role_name)
-}
-
-fn prepare_review_jobs(
-    plan_path: &str,
-    base_ref: &str,
-    reviewers: &[ReviewRole],
-) -> Vec<PreparedReview> {
-    reviewers
+    let prepared: Vec<PreparedReview> = reviewers
         .iter()
         .map(|rv| PreparedReview {
             prompt: render_prompt(
@@ -439,67 +423,60 @@ fn prepare_review_jobs(
                     "RoleName": rv.name,
                     "RoleScope": rv.scope,
                     "RolePrompt": rv.prompt,
-                    "ReviewName": review_output_name(&rv.name),
+                    "ReviewName": format!("review-{}.md", rv.name),
                 }),
             ),
             role_name: rv.name.clone(),
             role_scope: rv.scope.clone(),
         })
-        .collect()
-}
-
-fn run_review_batches(r: &Runner, prepared: &[PreparedReview], max_concurrent: usize) {
-    for batch in prepared.chunks(max_concurrent) {
-        run_review_batch(r, batch);
-    }
-}
-
-fn run_review_batch(r: &Runner, batch: &[PreparedReview]) {
-    let handles: Vec<_> = batch
-        .iter()
-        .map(|review| {
-            info(&format!(
-                "[parallel:{}] running {} review",
-                review.role_name, review.role_scope
-            ));
-
-            let runner = r.labeled(&review.role_name);
-            let prompt = review.prompt.clone();
-            let role_name = review.role_name.clone();
-            let role_scope = review.role_scope.clone();
-            std::thread::spawn(move || {
-                let result = runner.run(&prompt);
-                match &result {
-                    Ok(()) => info(&format!(
-                        "[parallel:{}] done {} review (exit=0)",
-                        role_name, role_scope
-                    )),
-                    Err(_) => err_msg(&format!(
-                        "[parallel:{}] done {} review (exit=1)",
-                        role_name, role_scope
-                    )),
-                }
-                result
-            })
-        })
         .collect();
 
-    for (review, handle) in batch.iter().zip(handles) {
-        if handle.join().is_err() {
-            err_msg(&format!(
-                "[parallel:{}] review thread panicked",
-                review.role_name
-            ));
+    let max_concurrent = parallel.unwrap_or(reviewers.len()).max(1);
+    for batch in prepared.chunks(max_concurrent) {
+        let handles: Vec<_> = batch
+            .iter()
+            .map(|review| {
+                info(&format!(
+                    "[parallel:{}] running {} review",
+                    review.role_name, review.role_scope
+                ));
+
+                let runner = r.labeled(&review.role_name);
+                let prompt = review.prompt.clone();
+                let role_name = review.role_name.clone();
+                let role_scope = review.role_scope.clone();
+                std::thread::spawn(move || {
+                    let result = runner.run(&prompt);
+                    match &result {
+                        Ok(()) => info(&format!(
+                            "[parallel:{}] done {} review (exit=0)",
+                            role_name, role_scope
+                        )),
+                        Err(_) => err_msg(&format!(
+                            "[parallel:{}] done {} review (exit=1)",
+                            role_name, role_scope
+                        )),
+                    }
+                    result
+                })
+            })
+            .collect();
+
+        for (review, handle) in batch.iter().zip(handles) {
+            if handle.join().is_err() {
+                err_msg(&format!(
+                    "[parallel:{}] review thread panicked",
+                    review.role_name
+                ));
+            }
         }
     }
-}
 
-fn collect_review_issues(reviewers: &[ReviewRole]) -> Option<Vec<String>> {
     let mut all_clean = true;
     let mut issues = Vec::new();
 
     for rv in reviewers {
-        let review = read_dex_file(&review_output_name(&rv.name));
+        let review = read_dex_file(&format!("review-{}.md", rv.name));
         match review {
             None => {
                 warn(&format!("Reviewer {:?} produced no output", rv.name));
@@ -608,9 +585,27 @@ pub fn bare_phase(r: &Runner, request_file: &str, max_iterations: usize) -> Resu
 pub fn finalize_phase(r: &Runner, plan_path: &str, finalize_target: &str) -> Result<(), String> {
     banner("FINALIZE");
 
-    let branch = current_branch()?;
-    let finalize_target = resolve_finalize_target(finalize_target)?;
-    let commits_ahead = commit_count_ahead(&finalize_target)?;
+    let branch = git_trimmed_output(&["symbolic-ref", "--short", "HEAD"])?;
+    if branch.is_empty() {
+        return Err(
+            "finalize requires a named branch (detached HEAD is not supported)".to_string(),
+        );
+    }
+
+    let finalize_target = finalize_target.trim();
+    if finalize_target.is_empty() {
+        return Err(
+            "finalize requires a rebase target: dex --finalize <target-for-rebase>".to_string(),
+        );
+    }
+
+    git_trimmed_output(&["rev-parse", "--verify", finalize_target])?;
+
+    let range = format!("{}..HEAD", finalize_target);
+    let count = git_trimmed_output(&["rev-list", "--count", &range])?;
+    let commits_ahead = count
+        .parse::<u64>()
+        .map_err(|e| format!("parse git rev-list count {:?}: {}", count, e))?;
     if commits_ahead == 0 {
         return Err(format!(
             "finalize: branch {:?} has no commits to finalize relative to {:?}; run this on your feature branch or choose a different target",
@@ -632,35 +627,6 @@ pub fn finalize_phase(r: &Runner, plan_path: &str, finalize_target: &str) -> Res
         return Err(format!("finalize failed after automatic retries: {}", e));
     }
     Ok(())
-}
-
-fn current_branch() -> Result<String, String> {
-    let branch = git_trimmed_output(&["symbolic-ref", "--short", "HEAD"])?;
-    if branch.is_empty() {
-        return Err(
-            "finalize requires a named branch (detached HEAD is not supported)".to_string(),
-        );
-    }
-    Ok(branch)
-}
-
-fn resolve_finalize_target(finalize_target: &str) -> Result<String, String> {
-    if finalize_target.trim().is_empty() {
-        return Err(
-            "finalize requires a rebase target: dex --finalize <target-for-rebase>".to_string(),
-        );
-    }
-
-    git_trimmed_output(&["rev-parse", "--verify", finalize_target])?;
-    Ok(finalize_target.to_string())
-}
-
-fn commit_count_ahead(finalize_target: &str) -> Result<u64, String> {
-    let range = format!("{}..HEAD", finalize_target);
-    let count = git_trimmed_output(&["rev-list", "--count", &range])?;
-    count
-        .parse::<u64>()
-        .map_err(|e| format!("parse git rev-list count {:?}: {}", count, e))
 }
 
 #[cfg(test)]

@@ -318,36 +318,6 @@ fn run_app() -> CmdResult {
             return Ok(());
         }
     };
-    ensure_repo_ready()?;
-    ensure_dex_dir();
-    if args.update_prompts {
-        seed_prompts(true);
-        info("Prompt templates updated to built-in defaults.");
-    } else {
-        seed_prompts(false);
-    }
-
-    app_header();
-    validate_cli_name(&config.clis, &config.cli).map_err(CmdError::Failure)?;
-    let cli = config
-        .clis
-        .get(&config.cli)
-        .cloned()
-        .ok_or_else(|| format!("unknown CLI {:?}", &config.cli))?;
-    let runner = Runner::new(cli, Duration::from_secs(config.timeout));
-    match command {
-        SubCommand::Plan(cmd) => cmd_plan(&runner, cmd),
-        SubCommand::Import(cmd) => cmd_import(cmd),
-        SubCommand::Amend(cmd) => cmd_amend(&runner, cmd),
-        SubCommand::Apply(cmd) => cmd_apply(&runner, cmd),
-        SubCommand::Review(cmd) => cmd_review(&runner, cmd),
-        SubCommand::Bare(cmd) => cmd_bare(&runner, cmd),
-        SubCommand::Finalize(cmd) => cmd_finalize(&runner, cmd),
-        SubCommand::Research(cmd) => cmd_research(&runner, cmd),
-    }
-}
-
-fn ensure_repo_ready() -> CmdResult {
     if let Err(e) = require_git_repo() {
         if !std::io::stdin().is_terminal() {
             return Err(CmdError::Failure(e));
@@ -367,8 +337,238 @@ fn ensure_repo_ready() -> CmdResult {
             .map(|_| info("Initialized git repository."))
             .map_err(|init_err| CmdError::Failure(format!("git init failed: {}", init_err)))?;
     }
+    ensure_dex_dir();
+    if args.update_prompts {
+        seed_prompts(true);
+        info("Prompt templates updated to built-in defaults.");
+    } else {
+        seed_prompts(false);
+    }
 
-    Ok(())
+    app_header();
+    validate_cli_name(&config.clis, &config.cli).map_err(CmdError::Failure)?;
+    let cli = config
+        .clis
+        .get(&config.cli)
+        .cloned()
+        .ok_or_else(|| format!("unknown CLI {:?}", &config.cli))?;
+    let runner = Runner::new(cli, Duration::from_secs(config.timeout));
+    match command {
+        SubCommand::Plan(cmd) => {
+            ensure_interactive_stdin("plan")?;
+
+            let plan_path = dex_path("plan.md");
+            let plan_exists = Path::new(&plan_path).exists();
+
+            if plan_exists && cmd.force {
+                info("Clearing existing artifacts (plan, progress, feedbacks, reviews).");
+                reset_dex_runtime_artifacts();
+            }
+
+            let has_request = cmd.request.iter().any(|s| !s.trim().is_empty());
+            if plan_exists && !cmd.force && has_request {
+                return Err(CmdError::Failure(
+                    "A plan already exists. Use `dex plan` to resume it, or `dex plan --force <request>` to overwrite.".into(),
+                ));
+            }
+
+            if plan_exists && !cmd.force {
+                return match resume_plan(&runner)? {
+                    Some(_) => {
+                        finish("Plan saved.");
+                        Ok(())
+                    }
+                    None => Err(CmdError::Cancelled),
+                };
+            }
+
+            let request = read_text_or_file(cmd.request, "request")?;
+            match plan_phase(&runner, &request, Vec::new())? {
+                Some(_) => {
+                    finish("Plan saved.");
+                    Ok(())
+                }
+                None => Err(CmdError::Cancelled),
+            }
+        }
+        SubCommand::Import(cmd) => {
+            let plan_path = dex_path("plan.md");
+            let plan_exists = Path::new(&plan_path).exists();
+            if plan_exists && !cmd.force {
+                return Err(CmdError::Failure(
+                    "A plan already exists. Use `dex import --force` to overwrite it.".into(),
+                ));
+            }
+            if plan_exists && cmd.force {
+                info("Clearing existing artifacts (plan, progress, feedbacks, reviews).");
+            }
+
+            validate_candidate_plan(&cmd.file)?;
+            let imported_plan = fs::read_to_string(&cmd.file)
+                .map_err(|e| format!("read imported plan {:?}: {}", cmd.file, e))?;
+
+            ensure_dex_dir();
+            reset_dex_runtime_artifacts();
+            fs::write(&plan_path, &imported_plan)
+                .map_err(|e| format!("write imported plan to {}: {}", plan_path, e))?;
+            save_plan_request(&format!("Imported plan from {}", cmd.file));
+
+            finish(&format!("Plan imported from {}.", cmd.file));
+            Ok(())
+        }
+        SubCommand::Amend(cmd) => {
+            ensure_interactive_stdin("amend")?;
+
+            require_plan_exists()?;
+
+            let feedback = read_text_or_file(cmd.feedback, "feedback")?;
+            let request =
+                read_dex_file("request.txt").unwrap_or_else(|| "Amend the current plan.".into());
+            let mut feedbacks = load_feedbacks();
+            feedbacks.push(feedback);
+
+            match plan_phase(&runner, &request, feedbacks)? {
+                Some(_) => {
+                    finish("Plan updated.");
+                    Ok(())
+                }
+                None => Err(CmdError::Cancelled),
+            }
+        }
+        SubCommand::Apply(_) => {
+            let plan_path = require_plan_exists()?;
+
+            let status = git_trimmed_output(&["status", "--porcelain"])
+                .map_err(|e| CmdError::Failure(format!("failed to check git status: {}", e)))?;
+            if !status.is_empty() {
+                return Err(CmdError::Failure(
+                    "apply requires a clean working tree. Please commit or stash your changes first."
+                        .into(),
+                ));
+            }
+
+            impl_phase(&runner, &plan_path)?;
+            finish("Implementation complete.");
+            Ok(())
+        }
+        SubCommand::Review(cmd) => {
+            let plan_path = require_plan_exists()?;
+
+            let base_ref = match impl_commits_base_ref() {
+                Some(r) => r,
+                None => match cmd.from {
+                    Some(r) => {
+                        git_trimmed_output(&["rev-parse", "--verify", &r]).map_err(|e| {
+                            CmdError::Failure(format!("invalid --from ref {:?}: {}", r, e))
+                        })?;
+                        r
+                    }
+                    None => {
+                        return Err(CmdError::Failure(
+                            "No implementation history found. Run `dex apply` first, or pass `--from <base-ref>` explicitly.".into(),
+                        ));
+                    }
+                },
+            };
+
+            review_phase(&runner, &plan_path, &base_ref, cmd.parallel)?;
+            finish("Review complete.");
+            Ok(())
+        }
+        SubCommand::Bare(cmd) => {
+            let raw = cmd.request.join(" ");
+            let raw = raw.trim();
+            if raw.is_empty() {
+                return Err(CmdError::Failure(
+                    "missing request; pass request text or a file path containing it.".into(),
+                ));
+            }
+
+            let request_file = if Path::new(raw).is_file() {
+                raw.to_string()
+            } else {
+                if !Path::new(raw).exists()
+                    && raw.len() < 30
+                    && (raw.starts_with('.')
+                        || raw.starts_with('~')
+                        || raw.contains('/')
+                        || raw.contains('\\')
+                        || Path::new(raw).extension().is_some())
+                {
+                    info(&format!(
+                        "No request file found at {:?}; treating it as inline request text.",
+                        raw
+                    ));
+                }
+
+                ensure_dex_dir();
+                let path = dex_path("bare_prompt.txt");
+                fs::write(&path, raw).map_err(|e| format!("write {}: {}", path, e))?;
+                info(&format!(
+                    "Request persisted to {}. You can edit this file while iterations are running.",
+                    path
+                ));
+                path
+            };
+
+            bare_phase(&runner, &request_file, cmd.iterations)?;
+            finish("Bare mode complete.");
+            Ok(())
+        }
+        SubCommand::Finalize(cmd) => {
+            let plan_path = dex_path("plan.md");
+            finalize_phase(&runner, &plan_path, &cmd.onto)?;
+            finish("Finalize complete.");
+            Ok(())
+        }
+        SubCommand::Research(cmd) => {
+            if cmd.clear {
+                research::research_clear()?;
+                return Ok(());
+            }
+            if cmd.status {
+                research::research_status()?;
+                return Ok(());
+            }
+            if cmd.resume {
+                research::research_resume(&runner, cmd.max_iterations)?;
+                return Ok(());
+            }
+
+            let goal = cmd.goal.join(" ");
+            let goal = goal.trim().to_string();
+            if goal.is_empty() {
+                return Err(CmdError::Failure(
+                    "missing goal; pass optimization goal as argument (e.g. dex research \"optimize test runtime\")".into(),
+                ));
+            }
+
+            let config = if let Some(command) = cmd.command {
+                research::ResearchConfig {
+                    entry_type: "config".to_string(),
+                    goal,
+                    command,
+                    metric_name: cmd.metric.unwrap_or_else(|| "duration_s".to_string()),
+                    metric_unit: String::new(),
+                    direction: cmd.direction.unwrap_or_else(|| "lower".to_string()),
+                    files_in_scope: cmd
+                        .scope
+                        .unwrap_or_else(|| "(all project files)".to_string()),
+                    constraints: cmd.constraints.unwrap_or_default(),
+                    checks_command: cmd.checks,
+                }
+            } else if std::io::stdin().is_terminal() {
+                research::interactive_setup(&goal)?
+            } else {
+                return Err(CmdError::Failure(
+                    "--command is required in non-interactive mode".into(),
+                ));
+            };
+
+            research::research_new(&runner, config, cmd.max_iterations)?;
+            Ok(())
+        }
+    }
 }
 
 fn finish(message: &str) {
@@ -385,234 +585,6 @@ fn require_plan_exists() -> Result<String, CmdError> {
             "No plan exists. Use `dex plan` or `dex import` first.".into(),
         ))
     }
-}
-
-fn bare_request_should_warn_missing_file(raw: &str) -> bool {
-    (!Path::new(raw).exists())
-        && raw.len() < 30
-        && (raw.starts_with('.')
-            || raw.starts_with('~')
-            || raw.contains('/')
-            || raw.contains('\\')
-            || Path::new(raw).extension().is_some())
-}
-
-fn resolve_bare_request_file(request: Vec<String>) -> Result<String, CmdError> {
-    let raw = request.join(" ");
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return Err(CmdError::Failure(
-            "missing request; pass request text or a file path containing it.".into(),
-        ));
-    }
-
-    if Path::new(raw).is_file() {
-        return Ok(raw.to_string());
-    }
-
-    if bare_request_should_warn_missing_file(raw) {
-        info(&format!(
-            "No request file found at {:?}; treating it as inline request text.",
-            raw
-        ));
-    }
-
-    ensure_dex_dir();
-    let path = dex_path("bare_prompt.txt");
-    fs::write(&path, raw).map_err(|e| format!("write {}: {}", path, e))?;
-    info(&format!(
-        "Request persisted to {}. You can edit this file while iterations are running.",
-        path
-    ));
-    Ok(path)
-}
-
-// ── Subcommand handlers ──
-
-fn cmd_plan(runner: &Runner, cmd: PlanCmd) -> CmdResult {
-    ensure_interactive_stdin("plan")?;
-
-    let plan_path = dex_path("plan.md");
-    let plan_exists = Path::new(&plan_path).exists();
-
-    if plan_exists && cmd.force {
-        info("Clearing existing artifacts (plan, progress, feedbacks, reviews).");
-        reset_dex_runtime_artifacts();
-    }
-
-    let has_request = cmd.request.iter().any(|s| !s.trim().is_empty());
-    if plan_exists && !cmd.force && has_request {
-        return Err(CmdError::Failure(
-            "A plan already exists. Use `dex plan` to resume it, or `dex plan --force <request>` to overwrite.".into(),
-        ));
-    }
-
-    if plan_exists && !cmd.force {
-        return match resume_plan(runner)? {
-            Some(_) => {
-                finish("Plan saved.");
-                Ok(())
-            }
-            None => Err(CmdError::Cancelled),
-        };
-    }
-
-    let request = read_text_or_file(cmd.request, "request")?;
-    match plan_phase(runner, &request, Vec::new())? {
-        Some(_) => {
-            finish("Plan saved.");
-            Ok(())
-        }
-        None => Err(CmdError::Cancelled),
-    }
-}
-
-fn cmd_import(cmd: ImportCmd) -> CmdResult {
-    let plan_path = dex_path("plan.md");
-    let plan_exists = Path::new(&plan_path).exists();
-    if plan_exists && !cmd.force {
-        return Err(CmdError::Failure(
-            "A plan already exists. Use `dex import --force` to overwrite it.".into(),
-        ));
-    }
-    if plan_exists && cmd.force {
-        info("Clearing existing artifacts (plan, progress, feedbacks, reviews).");
-    }
-
-    validate_candidate_plan(&cmd.file)?;
-    let imported_plan = fs::read_to_string(&cmd.file)
-        .map_err(|e| format!("read imported plan {:?}: {}", cmd.file, e))?;
-
-    ensure_dex_dir();
-    reset_dex_runtime_artifacts();
-    fs::write(&plan_path, &imported_plan)
-        .map_err(|e| format!("write imported plan to {}: {}", plan_path, e))?;
-    save_plan_request(&format!("Imported plan from {}", cmd.file));
-
-    finish(&format!("Plan imported from {}.", cmd.file));
-    Ok(())
-}
-
-fn cmd_amend(runner: &Runner, cmd: AmendCmd) -> CmdResult {
-    ensure_interactive_stdin("amend")?;
-
-    require_plan_exists()?;
-
-    let feedback = read_text_or_file(cmd.feedback, "feedback")?;
-    let request = read_dex_file("request.txt").unwrap_or_else(|| "Amend the current plan.".into());
-    let mut feedbacks = load_feedbacks();
-    feedbacks.push(feedback);
-
-    match plan_phase(runner, &request, feedbacks)? {
-        Some(_) => {
-            finish("Plan updated.");
-            Ok(())
-        }
-        None => Err(CmdError::Cancelled),
-    }
-}
-
-fn cmd_apply(runner: &Runner, _cmd: ApplyCmd) -> CmdResult {
-    let plan_path = require_plan_exists()?;
-
-    let status = git_trimmed_output(&["status", "--porcelain"])
-        .map_err(|e| CmdError::Failure(format!("failed to check git status: {}", e)))?;
-    if !status.is_empty() {
-        return Err(CmdError::Failure(
-            "apply requires a clean working tree. Please commit or stash your changes first."
-                .into(),
-        ));
-    }
-
-    impl_phase(runner, &plan_path)?;
-    finish("Implementation complete.");
-    Ok(())
-}
-
-fn cmd_review(runner: &Runner, cmd: ReviewCmd) -> CmdResult {
-    let plan_path = require_plan_exists()?;
-
-    let base_ref = match impl_commits_base_ref() {
-        Some(r) => r,
-        None => match cmd.from {
-            Some(r) => {
-                git_trimmed_output(&["rev-parse", "--verify", &r])
-                    .map_err(|e| CmdError::Failure(format!("invalid --from ref {:?}: {}", r, e)))?;
-                r
-            }
-            None => {
-                return Err(CmdError::Failure(
-                    "No implementation history found. Run `dex apply` first, or pass `--from <base-ref>` explicitly.".into(),
-                ));
-            }
-        },
-    };
-
-    review_phase(runner, &plan_path, &base_ref, cmd.parallel)?;
-    finish("Review complete.");
-    Ok(())
-}
-
-fn cmd_bare(runner: &Runner, cmd: BareCmd) -> CmdResult {
-    let request_file = resolve_bare_request_file(cmd.request)?;
-    bare_phase(runner, &request_file, cmd.iterations)?;
-    finish("Bare mode complete.");
-    Ok(())
-}
-
-fn cmd_research(runner: &Runner, cmd: ResearchCmd) -> CmdResult {
-    if cmd.clear {
-        research::research_clear()?;
-        return Ok(());
-    }
-    if cmd.status {
-        research::research_status()?;
-        return Ok(());
-    }
-    if cmd.resume {
-        research::research_resume(runner, cmd.max_iterations)?;
-        return Ok(());
-    }
-
-    let goal = cmd.goal.join(" ");
-    let goal = goal.trim().to_string();
-    if goal.is_empty() {
-        return Err(CmdError::Failure(
-            "missing goal; pass optimization goal as argument (e.g. dex research \"optimize test runtime\")".into(),
-        ));
-    }
-
-    let config = if cmd.command.is_some() {
-        research::ResearchConfig {
-            entry_type: "config".to_string(),
-            goal,
-            command: cmd.command.unwrap(),
-            metric_name: cmd.metric.unwrap_or_else(|| "duration_s".to_string()),
-            metric_unit: String::new(),
-            direction: cmd.direction.unwrap_or_else(|| "lower".to_string()),
-            files_in_scope: cmd
-                .scope
-                .unwrap_or_else(|| "(all project files)".to_string()),
-            constraints: cmd.constraints.unwrap_or_default(),
-            checks_command: cmd.checks,
-        }
-    } else if std::io::stdin().is_terminal() {
-        research::interactive_setup(&goal)?
-    } else {
-        return Err(CmdError::Failure(
-            "--command is required in non-interactive mode".into(),
-        ));
-    };
-
-    research::research_new(runner, config, cmd.max_iterations)?;
-    Ok(())
-}
-
-fn cmd_finalize(runner: &Runner, cmd: FinalizeCmd) -> CmdResult {
-    let plan_path = dex_path("plan.md");
-    finalize_phase(runner, &plan_path, &cmd.onto)?;
-    finish("Finalize complete.");
-    Ok(())
 }
 
 fn ensure_interactive_stdin(command: &str) -> CmdResult {
@@ -679,7 +651,11 @@ fn parse_args() -> ParsedArgs {
         exit(1);
     }
 
-    let command_name = base_command_name(&strings[0]).to_string();
+    let command_name = Path::new(&strings[0])
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(&strings[0])
+        .to_string();
     let args: Vec<&str> = strings.iter().map(String::as_str).collect();
 
     let parsed = Args::from_args(&[&command_name], &args[1..]).unwrap_or_else(|early_exit| {
@@ -731,45 +707,30 @@ fn top_level_help_output(command_name: &str) -> String {
     }
 }
 
-fn base_command_name(path: &str) -> &str {
-    Path::new(path)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or(path)
-}
-
 fn render_help_output_with<S: AsRef<str>>(base_help: &str, available: &[S]) -> String {
     let mut output = String::with_capacity(base_help.len() + 64);
     output.push_str(base_help);
 
-    if !output.ends_with('\n') {
+    if !output.is_empty() && !output.ends_with('\n') {
         output.push('\n');
     }
-    output.push_str(&available_agents_help_section_with(available));
-    output
-}
-
-fn available_agents_help_section_with<S: AsRef<str>>(available: &[S]) -> String {
-    let mut section = String::from("\nAvailable agents:\n");
+    output.push_str("\nAvailable agents:\n");
     if available.is_empty() {
-        section.push_str("  none found in PATH\n");
-        return section;
+        output.push_str("  none found in PATH\n");
+        return output;
     }
 
     for agent in available {
-        section.push_str("  ");
-        section.push_str(agent.as_ref());
-        section.push('\n');
+        output.push_str("  ");
+        output.push_str(agent.as_ref());
+        output.push('\n');
     }
-    section
+    output
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        available_agents_help_section_with, read_text_or_file, render_help_output_with,
-        top_level_help_output, CmdError,
-    };
+    use super::{read_text_or_file, render_help_output_with, top_level_help_output, CmdError};
     use std::fs;
     use std::path::PathBuf;
 
@@ -789,7 +750,7 @@ mod tests {
     #[test]
     fn help_section_lists_available_agents() {
         assert_eq!(
-            available_agents_help_section_with(&["codex", "gemini"]),
+            render_help_output_with("", &["codex", "gemini"]),
             "\nAvailable agents:\n  codex\n  gemini\n"
         );
     }
