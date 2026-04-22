@@ -8,11 +8,13 @@ use crate::core::{
     git_trimmed_output, impl_commit_history_summary, read_dex_file, remove_dex_file, render_prompt,
     save_feedbacks, save_plan_request,
 };
-use crate::plan::{all_tasks_done, next_open_task, plan_step_counts};
+use crate::plan::{next_open_task, plan_step_counts};
 use crate::runner::Runner;
 use crate::ui::{
     banner, err_msg, info, phase_detail, prompt_choice, prompt_multiline, show_markdown, warn,
 };
+
+const IMPLEMENTATION_STALEMATE_LIMIT: usize = 4;
 
 // ── Phase 1: Planning ──
 
@@ -232,6 +234,7 @@ pub fn impl_phase(r: &Runner, plan_path: &str) -> Result<(), String> {
     banner("IMPLEMENTATION");
 
     let mut iteration = 1;
+    let mut unchanged_iterations = 0;
     loop {
         let task = next_open_task(plan_path)?;
         let task = match task {
@@ -279,9 +282,22 @@ pub fn impl_phase(r: &Runner, plan_path: &str) -> Result<(), String> {
             }
         }
 
-        if all_tasks_done(plan_path)? {
+        let after_counts = plan_step_counts(plan_path)?;
+        if after_counts.0 == 0 {
             info("All tasks complete!");
             return Ok(());
+        }
+
+        unchanged_iterations = if (plan_steps_open, plan_steps_total) == after_counts {
+            unchanged_iterations + 1
+        } else {
+            0
+        };
+        if unchanged_iterations >= IMPLEMENTATION_STALEMATE_LIMIT {
+            return Err(format!(
+                "STALEMATE: total plan steps ({}) and remaining plan steps ({}) were unchanged for {} consecutive implementation iterations.",
+                after_counts.1, after_counts.0, IMPLEMENTATION_STALEMATE_LIMIT
+            ));
         }
 
         iteration += 1;

@@ -76,11 +76,6 @@ pub fn parse_tasks(content: &str) -> Vec<TaskGroup> {
     groups
 }
 
-pub fn all_tasks_done(path: &str) -> Result<bool, String> {
-    let groups = parse_plan(path)?;
-    Ok(groups.iter().all(|g| g.is_complete()))
-}
-
 pub fn plan_step_counts(path: &str) -> Result<(usize, usize), String> {
     let groups = parse_plan(path)?;
     let open = groups.iter().map(|g| g.open).sum();
