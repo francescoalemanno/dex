@@ -57,9 +57,10 @@ pub fn parse_tasks(content: &str) -> Vec<TaskGroup> {
 
         cur.lines.push(line.to_string());
         if let Some(caps) = checkbox_re.captures(line) {
-            match &caps[2] {
-                " " => cur.open += 1,
-                _ => cur.done += 1,
+            if &caps[2] == " " {
+                cur.open += 1;
+            } else {
+                cur.done += 1;
             }
         }
     }

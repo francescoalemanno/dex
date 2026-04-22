@@ -535,17 +535,19 @@ fn run_app() -> CmdResult {
                 ));
             }
 
-            let request_file = if Path::new(raw).is_file() {
+            let raw_path = Path::new(raw);
+            let looks_like_path = !raw_path.exists()
+                && raw.len() < 30
+                && (raw.starts_with('.')
+                    || raw.starts_with('~')
+                    || raw.contains('/')
+                    || raw.contains('\\')
+                    || raw_path.extension().is_some());
+
+            let request_file = if raw_path.is_file() {
                 raw.to_string()
             } else {
-                if !Path::new(raw).exists()
-                    && raw.len() < 30
-                    && (raw.starts_with('.')
-                        || raw.starts_with('~')
-                        || raw.contains('/')
-                        || raw.contains('\\')
-                        || Path::new(raw).extension().is_some())
-                {
+                if looks_like_path {
                     info(&format!(
                         "No request file found at {:?}; treating it as inline request text.",
                         raw
@@ -629,13 +631,12 @@ fn finish(message: &str) {
 
 fn require_plan_exists() -> Result<String, CmdError> {
     let plan_path = dex_path("plan.md");
-    if Path::new(&plan_path).exists() {
-        Ok(plan_path)
-    } else {
-        Err(CmdError::Failure(
-            "No plan exists. Use `dex plan` or `dex import` first.".into(),
-        ))
-    }
+    Path::new(&plan_path)
+        .exists()
+        .then_some(plan_path)
+        .ok_or_else(|| {
+            CmdError::Failure("No plan exists. Use `dex plan` or `dex import` first.".into())
+        })
 }
 
 fn ensure_interactive_stdin(command: &str) -> CmdResult {
@@ -643,14 +644,14 @@ fn ensure_interactive_stdin(command: &str) -> CmdResult {
         return Ok(());
     }
 
+    let input_kind = if command == "amend" {
+        "feedback"
+    } else {
+        "request"
+    };
     Err(CmdError::Failure(format!(
         "`dex {}` requires an interactive stdin; pass the {} as an argument or a file path instead.",
-        command,
-        if command == "amend" {
-            "feedback"
-        } else {
-            "request"
-        }
+        command, input_kind
     )))
 }
 
@@ -670,15 +671,15 @@ fn read_text_or_file(words: Vec<String>, kind: &str) -> Result<String, CmdError>
         raw.to_string()
     };
 
-    let text = text.trim().to_string();
-    if text.is_empty() {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
         return Err(CmdError::Failure(format!(
             "{} is empty after trimming.",
             kind
         )));
     }
 
-    Ok(text)
+    Ok(trimmed.to_string())
 }
 
 fn render_help_output_with<S: AsRef<str>>(base_help: &str, available: &[S]) -> String {

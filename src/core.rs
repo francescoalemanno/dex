@@ -146,17 +146,17 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         let clis = default_cli_configs();
-        let cli = match dex_available_agents(&clis).first() {
-            Some(name) => name.clone(),
-            None => {
+        let cli = dex_available_agents(&clis)
+            .first()
+            .cloned()
+            .unwrap_or_else(|| {
                 let cli = default_cli_name();
                 if let Err(err) = validate_cli_name(&clis, &cli) {
                     err_msg("No Agentic CLI found, consider installing OpenCode.");
                     err_msg(&err);
                 }
                 cli
-            }
-        };
+            });
 
         Config {
             cli,
@@ -187,19 +187,19 @@ fn dex_config_path() -> PathBuf {
 pub fn load_config() -> Config {
     ensure_config();
     let path = dex_config_path();
-    match fs::read_to_string(&path) {
-        Ok(data) => {
-            let parsed: Config = serde_json::from_str(&data).unwrap_or_default();
+    fs::read_to_string(&path)
+        .ok()
+        .map(|data| {
+            let Config { cli, timeout, clis } = serde_json::from_str(&data).unwrap_or_default();
             let mut merged = Config::default();
-            if !parsed.cli.trim().is_empty() {
-                merged.cli = parsed.cli;
+            if !cli.trim().is_empty() {
+                merged.cli = cli;
             }
-            merged.timeout = parsed.timeout;
-            merged.clis.extend(parsed.clis);
+            merged.timeout = timeout;
+            merged.clis.extend(clis);
             merged
-        }
-        Err(_) => Config::default(),
-    }
+        })
+        .unwrap_or_default()
 }
 
 pub fn save_config(cfg: &Config) {

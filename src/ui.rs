@@ -214,17 +214,13 @@ pub fn prompt_multiline(msg: &str) -> String {
 pub fn prompt_choice(msg: &str, choices: &[&str]) -> String {
     loop {
         let mut stream = StandardStream::stderr(ColorChoice::Auto);
-        // Question line
         let mut q_spec = ColorSpec::new();
         q_spec.set_fg(Some(Color::Yellow)).set_bold(true);
         let _ = stream.set_color(&q_spec);
         let _ = writeln!(stream, "? {}", msg);
-        // Numbered choices
         for (i, c) in choices.iter().enumerate() {
-            let _ = stream.set_color(&q_spec);
             let _ = writeln!(stream, "  {}) {}", i + 1, c);
         }
-        let _ = stream.set_color(&q_spec);
         let _ = write!(stream, "  > ");
         let _ = stream.reset();
         let _ = stream.flush();

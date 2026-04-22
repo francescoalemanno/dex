@@ -330,18 +330,10 @@ fn build_research_prompt(
                 .unwrap_or_else(|| "N/A".to_string()),
             "Iteration": iteration,
             "MaxIterations": max_iterations,
-            "RecentHistory": if recent_history.is_empty() {
-                None
-            } else {
-                Some(recent_history)
-            },
-            "DeadEnds": if dead_ends.is_empty() { None } else { Some(dead_ends) },
+            "RecentHistory": (!recent_history.is_empty()).then_some(recent_history),
+            "DeadEnds": (!dead_ends.is_empty()).then_some(dead_ends),
             "FilesInScope": config.files_in_scope,
-            "Constraints": if config.constraints.is_empty() {
-                None
-            } else {
-                Some(&config.constraints)
-            },
+            "Constraints": (!config.constraints.is_empty()).then_some(&config.constraints),
         }),
     )
 }
@@ -520,12 +512,10 @@ fn run_benchmark(command: &str, timeout: Duration) -> Result<BenchmarkOutcome, S
 fn require_clean_worktree() -> Result<(), String> {
     let status = git_trimmed_output(&["status", "--porcelain"])?;
     if !status.is_empty() {
-        return Err(
-            "working tree is dirty — commit or stash your changes before starting research.\n\
-             Dirty files:\n"
-                .to_string()
-                + &status,
-        );
+        return Err(format!(
+            "working tree is dirty — commit or stash your changes before starting research.\nDirty files:\n{}",
+            status
+        ));
     }
     Ok(())
 }
@@ -654,13 +644,7 @@ pub fn research_status() -> Result<(), String> {
 }
 
 pub fn research_clear() -> Result<(), String> {
-    let mut removed = false;
-    for name in &["research.jsonl"] {
-        if fs::remove_file(dex_path(name)).is_ok() {
-            removed = true;
-        }
-    }
-    if removed {
+    if fs::remove_file(dex_path("research.jsonl")).is_ok() {
         info("Research session cleared.");
     } else {
         info("No research session files to clear.");

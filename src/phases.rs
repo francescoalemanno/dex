@@ -114,15 +114,11 @@ fn run_planning_loop(
 
         remove_dex_file("questions.md");
 
-        let fb_values: Vec<serde_json::Value> = feedbacks
-            .iter()
-            .map(|s| serde_json::Value::String(s.clone()))
-            .collect();
         let p = render_prompt(
             "plan.txt",
             &serde_json::json!({
                 "Request": request,
-                "Feedbacks": fb_values,
+                "Feedbacks": feedbacks,
             }),
         );
 

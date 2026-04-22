@@ -121,11 +121,11 @@ impl Runner {
             cmd.envs(&cfg.env);
         }
 
-        if cfg.stdin {
-            cmd.stdin(Stdio::piped());
+        cmd.stdin(if cfg.stdin {
+            Stdio::piped()
         } else {
-            cmd.stdin(Stdio::null());
-        }
+            Stdio::null()
+        });
 
         let child =
             SharedChild::spawn(&mut cmd).map_err(|e| format!("spawn {}: {}", cfg.command, e))?;
@@ -259,24 +259,25 @@ fn display_plain(text: &str, start: Instant, label: &str) -> bool {
 }
 
 fn display_jsonnd(text: &str, start: Instant, label: &str) -> bool {
-    if let Ok(obj) = serde_json::from_str::<Value>(text) {
-        if !obj.is_object() {
-            return false;
-        }
-
-        let mut texts = Vec::new();
-        walk_json(&obj, &mut texts);
-        if !texts.is_empty() {
-            let mut stream = locked_stderr();
-            for t in &texts {
-                write_prefix(&mut stream, start, label);
-                let _ = writeln!(stream, " {}", t);
-            }
-            return true;
-        }
+    let Ok(obj) = serde_json::from_str::<Value>(text) else {
+        return display_plain(text, start, label);
+    };
+    if !obj.is_object() {
         return false;
     }
-    display_plain(text, start, label)
+
+    let mut texts = Vec::new();
+    walk_json(&obj, &mut texts);
+    if texts.is_empty() {
+        return false;
+    }
+
+    let mut stream = locked_stderr();
+    for t in &texts {
+        write_prefix(&mut stream, start, label);
+        let _ = writeln!(stream, " {}", t);
+    }
+    true
 }
 
 fn display_pi_jsonnd(text: &str, start: Instant, label: &str) -> bool {
@@ -318,7 +319,7 @@ fn walk_json(v: &Value, texts: &mut Vec<String>) {
     match v {
         Value::Object(map) => {
             for (k, child) in map {
-                if k == "text" || k == "thinking" {
+                if matches!(k.as_str(), "text" | "thinking") {
                     if let Some(s) = child.as_str() {
                         texts.push(s.to_string());
                         continue;
