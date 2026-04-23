@@ -492,10 +492,26 @@ fn run_app() -> CmdResult {
             let status = git_trimmed_output(&["status", "--porcelain"])
                 .map_err(|e| CmdError::Failure(format!("failed to check git status: {}", e)))?;
             if !status.is_empty() {
-                return Err(CmdError::Failure(
-                    "apply requires a clean working tree. Please commit or stash your changes first."
-                        .into(),
-                ));
+                if !std::io::stdin().is_terminal() {
+                    return Err(CmdError::Failure(
+                        "apply requires a clean working tree. Please commit or stash your changes first."
+                            .into(),
+                    ));
+                }
+
+                let prompt = format!(
+                    "Working tree is not clean:\n{}\nProceed with apply anyway?",
+                    status
+                );
+                let choice = crate::ui::prompt_choice(&prompt, &["yes", "no"]);
+                if choice == "no" {
+                    return Err(CmdError::Failure(
+                        "apply requires a clean working tree. Please commit or stash your changes first."
+                            .into(),
+                    ));
+                }
+
+                info("Proceeding with a dirty working tree.");
             }
 
             impl_phase(&runner, &plan_path)?;
