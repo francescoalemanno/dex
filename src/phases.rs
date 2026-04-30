@@ -216,6 +216,7 @@ pub fn impl_phase(r: &Runner, plan_path: &str) -> Result<(), String> {
 
     let mut iteration = 1;
     let mut unchanged_iterations = 0;
+    let mut stall_note: Option<String> = None;
     loop {
         let Some(task) = next_open_task(plan_path)? else {
             info("All tasks complete!");
@@ -235,6 +236,9 @@ pub fn impl_phase(r: &Runner, plan_path: &str) -> Result<(), String> {
         );
         phase_detail(&format!("Iteration {}", iteration), &iteration_detail);
         phase_detail("Job", header);
+        if let Some(ref note) = stall_note {
+            warn(&format!("Prior iteration had no progress: {}", note));
+        }
 
         let commit_history = impl_commit_history_summary().unwrap_or_default();
         let state_a = git_head().ok();
@@ -246,6 +250,7 @@ pub fn impl_phase(r: &Runner, plan_path: &str) -> Result<(), String> {
                 "TaskHeader": task.header,
                 "TaskBody": task.body(),
                 "CommitHistory": commit_history,
+                "StallNote": stall_note,
             }),
         );
 
@@ -257,9 +262,11 @@ pub fn impl_phase(r: &Runner, plan_path: &str) -> Result<(), String> {
             ));
         }
 
+        let mut made_commits = false;
         if let Some(ref before) = state_a {
             if let Ok(after) = git_head() {
                 let new_commits = git_commits_between(before, &after);
+                made_commits = !new_commits.is_empty();
                 append_impl_commits(&new_commits);
             }
         }
@@ -269,6 +276,31 @@ pub fn impl_phase(r: &Runner, plan_path: &str) -> Result<(), String> {
             info("All tasks complete!");
             return Ok(());
         }
+
+        let made_plan_progress = (plan_steps_open, plan_steps_total) != after_counts;
+        stall_note = match (made_commits, made_plan_progress) {
+            (false, false) => Some(
+                "the previous iteration produced no git commits and ticked no checkboxes. \
+You must either (a) finish the current task and commit, or (b) if it is genuinely blocked, \
+mark the offending checkbox `- [x] <description> (skipped — blocked: <reason>)` so the loop can \
+move on. Do NOT silently re-attempt the same approach without changes."
+                    .to_string(),
+            ),
+            (true, false) => Some(
+                "the previous iteration committed code but did not tick any checkboxes. \
+After completing work, edit the plan file to mark the corresponding `- [ ]` items as `- [x]` \
+in the SAME iteration. If a checkbox cannot be completed automatically, mark it skipped per \
+the plan's non-automatable rule rather than leaving it open."
+                    .to_string(),
+            ),
+            (false, true) => Some(
+                "the previous iteration made plan progress without committing. \
+Always commit the implementation changes (excluding plan file edits is OK) so review and \
+finalize phases can see them."
+                    .to_string(),
+            ),
+            (true, true) => None,
+        };
 
         unchanged_iterations = if (plan_steps_open, plan_steps_total) == after_counts {
             unchanged_iterations + 1

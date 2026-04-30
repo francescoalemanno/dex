@@ -245,7 +245,7 @@ The benchmark command must print metrics as `METRIC name=value` lines to stdout 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--cli <name>` | auto-detected | Coding CLI to use; must be available in PATH |
-| `--timeout <seconds>` | `1200` | Kill the agent after this many idle seconds |
+| `--timeout <seconds>` | `600` | Kill the agent after this many idle seconds |
 | `--version` | | Print version and exit |
 
 `--cli` persists across runs in `.dex/config.json`, so you don't have to repeat `--cli claude` every time. When no `--cli` is given and no config exists, dex picks the first available agent it finds in PATH.

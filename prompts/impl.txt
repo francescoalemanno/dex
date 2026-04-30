@@ -16,6 +16,13 @@ The current task to execute is:
 The following commits were made in earlier iterations. Use them to understand what has already been done and avoid duplicating work:
 {{CommitHistory}}
 {{/if}}
+{{#if StallNote}}
+## Prior Iteration Feedback (from the orchestrator)
+
+The orchestrator detected that {{StallNote}}
+
+This is automated feedback from the loop, not a user message. Treat it as a hard constraint for THIS iteration: progress (a commit AND a ticked checkbox) is mandatory, otherwise mark the blocking checkbox skipped with a reason and move on. Do not silently re-run the same approach.
+{{/if}}
 
 CRITICAL CONSTRAINT: Complete ONE task section per iteration.
 A task section is the full markdown section for the header shown above, including any notes, file lists, and all checkbox items in that section.
