@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use termcolor::{ColorSpec, StandardStream, WriteColor};
 
 use crate::core::{CliConfig, OutputFormat};
-use crate::ui::{err_msg, locked_stderr, phase_detail, show_markdown, warn};
+use crate::ui::{err_msg, locked_stderr, phase_detail, show_markdown, warn, wrap_text};
 
 static VERBOSE: AtomicBool = AtomicBool::new(false);
 
@@ -193,21 +193,28 @@ impl Runner {
                     } else if last_display.elapsed() >= Duration::from_secs(60) {
                         let silent_secs = last_display.elapsed().as_secs();
                         let mut stream = locked_stderr();
-                        write_prefix(&mut stream, start, &self.label);
+                        let plen = write_prefix(&mut stream, start, &self.label);
                         let mut spec = ColorSpec::new();
                         spec.set_dimmed(true);
                         let _ = stream.set_color(&spec);
-                        let _ = writeln!(stream, " · still working ({}s silent)", silent_secs);
+                        let body = format!("· still working ({}s silent)", silent_secs);
+                        let _ = writeln!(stream, " {}", wrap_text(&body, plen + 1));
                         let _ = stream.reset();
                         last_display = Instant::now();
                     }
                 }
                 Ok(StreamLine::Stderr(text)) => {
-                    let _guard = locked_stderr();
+                    let trimmed = text.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    let mut stream = locked_stderr();
                     if self.label.is_empty() {
-                        eprintln!("{}", text);
+                        let _ = writeln!(stream, "{}", wrap_text(trimmed, 0));
                     } else {
-                        eprintln!("[{}] {}", self.label, text);
+                        let prefix = format!("[{}] ", self.label);
+                        let plen = prefix.chars().count();
+                        let _ = writeln!(stream, "{}{}", prefix, wrap_text(trimmed, plen));
                     }
                 }
                 Ok(StreamLine::Done) => {
@@ -241,7 +248,9 @@ impl Runner {
     }
 }
 
-fn write_prefix(stream: &mut StandardStream, start: Instant, label: &str) {
+/// Write the time/label prefix and return the visible column width that was
+/// written (so subsequent text can be soft-wrapped with a matching indent).
+fn write_prefix(stream: &mut StandardStream, start: Instant, label: &str) -> usize {
     let d = start.elapsed();
     let h = d.as_secs() / 3600;
     let m = (d.as_secs() % 3600) / 60;
@@ -249,25 +258,34 @@ fn write_prefix(stream: &mut StandardStream, start: Instant, label: &str) {
     let mut spec = ColorSpec::new();
     spec.set_dimmed(true);
     let _ = stream.set_color(&spec);
-    if h > 0 {
-        let _ = write!(stream, "[{:02}:{:02}:{:02}]", h, m, s);
+    let time_part = if h > 0 {
+        format!("[{:02}:{:02}:{:02}]", h, m, s)
     } else {
-        let _ = write!(stream, "[{:02}:{:02}]", m, s);
-    }
+        format!("[{:02}:{:02}]", m, s)
+    };
+    let _ = write!(stream, "{}", time_part);
     let _ = stream.reset();
+    let mut visible = time_part.chars().count();
     if !label.is_empty() {
         let mut label_spec = ColorSpec::new();
         label_spec.set_fg(Some(termcolor::Color::Magenta)).set_bold(true);
         let _ = stream.set_color(&label_spec);
-        let _ = write!(stream, " [{}]", label);
+        let lbl = format!(" [{}]", label);
+        let _ = write!(stream, "{}", lbl);
         let _ = stream.reset();
+        visible += lbl.chars().count();
     }
+    visible
 }
 
 fn display_plain(text: &str, start: Instant, label: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
     let mut stream = locked_stderr();
-    write_prefix(&mut stream, start, label);
-    let _ = writeln!(stream, " {}", text);
+    let plen = write_prefix(&mut stream, start, label);
+    let _ = writeln!(stream, " {}", wrap_text(trimmed, plen + 1));
     true
 }
 
@@ -281,14 +299,15 @@ fn display_jsonnd(text: &str, start: Instant, label: &str) -> bool {
 
     let mut texts = Vec::new();
     walk_json(&obj, &mut texts);
-    if texts.is_empty() {
+    let trimmed: Vec<&str> = texts.iter().map(|t| t.trim()).filter(|t| !t.is_empty()).collect();
+    if trimmed.is_empty() {
         return false;
     }
 
     let mut stream = locked_stderr();
-    for t in &texts {
-        write_prefix(&mut stream, start, label);
-        let _ = writeln!(stream, " {}", t);
+    for t in &trimmed {
+        let plen = write_prefix(&mut stream, start, label);
+        let _ = writeln!(stream, " {}", wrap_text(t, plen + 1));
     }
     true
 }
@@ -318,11 +337,12 @@ fn display_pi_jsonnd(text: &str, start: Instant, label: &str) -> bool {
         let Some(text) = item.get("text").and_then(|v| v.as_str()) else {
             continue;
         };
-        if text.is_empty() {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
             continue;
         }
-        write_prefix(&mut stream, start, label);
-        let _ = writeln!(stream, " {}", text);
+        let plen = write_prefix(&mut stream, start, label);
+        let _ = writeln!(stream, " {}", wrap_text(trimmed, plen + 1));
         displayed = true;
     }
     displayed

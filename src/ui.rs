@@ -43,13 +43,82 @@ pub(crate) fn locked_stderr() -> Term {
 const REVISION: &str = env!("CARGO_PKG_VERSION");
 
 /// Detected (and clamped) usable terminal width in columns.
-fn term_width() -> usize {
+pub(crate) fn term_width() -> usize {
     let (cols, _) = terminal_size();
     let cols = cols as usize;
     if cols < 40 {
         80
     } else {
         cols.min(120)
+    }
+}
+
+/// Soft-wrap `text` to fit within the current terminal width.
+///
+/// - Existing newlines in `text` are preserved as hard breaks.
+/// - Continuation lines are prefixed with `indent` spaces, so wrapped output
+///   visually aligns under the column where `text` started.
+/// - Words longer than the available width are hard-broken at character
+///   boundaries.
+pub(crate) fn wrap_text(text: &str, indent: usize) -> String {
+    let width = term_width();
+    let avail = width.saturating_sub(indent).max(20);
+    let cont = " ".repeat(indent);
+    let mut out = String::new();
+
+    for (li, line) in text.split('\n').enumerate() {
+        if li > 0 {
+            out.push('\n');
+            out.push_str(&cont);
+        }
+
+        let mut col: usize = 0;
+        let mut first_word = true;
+        // Walk grapheme-ish words split on ASCII whitespace.
+        for word in line.split_whitespace() {
+            let wlen = word.chars().count();
+            if first_word {
+                if wlen <= avail {
+                    out.push_str(word);
+                    col = wlen;
+                } else {
+                    push_hard_wrapped(word, avail, &cont, &mut out);
+                    col = avail;
+                }
+                first_word = false;
+            } else if col + 1 + wlen <= avail {
+                out.push(' ');
+                out.push_str(word);
+                col += 1 + wlen;
+            } else {
+                out.push('\n');
+                out.push_str(&cont);
+                if wlen <= avail {
+                    out.push_str(word);
+                    col = wlen;
+                } else {
+                    push_hard_wrapped(word, avail, &cont, &mut out);
+                    col = avail;
+                }
+            }
+        }
+    }
+    out
+}
+
+fn push_hard_wrapped(word: &str, avail: usize, cont: &str, out: &mut String) {
+    let chars: Vec<char> = word.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if i > 0 {
+            out.push('\n');
+            out.push_str(cont);
+        }
+        let end = (i + avail).min(chars.len());
+        for c in &chars[i..end] {
+            out.push(*c);
+        }
+        i = end;
     }
 }
 
@@ -140,18 +209,22 @@ pub fn phase_detail(key: &str, value: &str) {
     let _ = write!(stream, "{}:", key);
     let _ = stream.reset();
 
-    let _ = writeln!(stream, " {}", value);
+    // Indent for continuation = "  │ " (4) + key + ": " (2) + leading space (1).
+    let indent = 4 + key.chars().count() + 3;
+    let _ = writeln!(stream, " {}", wrap_text(value, indent));
 }
 
 /// Print a success message: ✓ msg in green+bold.
 pub fn info(msg: &str) {
     let mut stream = locked_stderr();
+    // Symbol "✓ " then message; continuation indents by 2 visible columns.
+    let wrapped = wrap_text(msg, 2);
     write_styled_to(
         &mut stream,
         Some(Color::Green),
         true,
         false,
-        &format!("\u{2713} {}", msg),
+        &format!("\u{2713} {}", wrapped),
     );
     let _ = writeln!(stream);
 }
@@ -159,12 +232,13 @@ pub fn info(msg: &str) {
 /// Print a warning: ⚠ msg in yellow+bold.
 pub fn warn(msg: &str) {
     let mut stream = locked_stderr();
+    let wrapped = wrap_text(msg, 2);
     write_styled_to(
         &mut stream,
         Some(Color::Yellow),
         true,
         false,
-        &format!("\u{26a0} {}", msg),
+        &format!("\u{26a0} {}", wrapped),
     );
     let _ = writeln!(stream);
 }
@@ -172,12 +246,13 @@ pub fn warn(msg: &str) {
 /// Print an error: ✗ msg in red+bold.
 pub fn err_msg(msg: &str) {
     let mut stream = locked_stderr();
+    let wrapped = wrap_text(msg, 2);
     write_styled_to(
         &mut stream,
         Some(Color::Red),
         true,
         false,
-        &format!("\u{2717} {}", msg),
+        &format!("\u{2717} {}", wrapped),
     );
     let _ = writeln!(stream);
 }
