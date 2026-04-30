@@ -191,9 +191,14 @@ impl Runner {
                     if displayed {
                         last_display = Instant::now();
                     } else if last_display.elapsed() >= Duration::from_secs(60) {
+                        let silent_secs = last_display.elapsed().as_secs();
                         let mut stream = locked_stderr();
                         write_prefix(&mut stream, start, &self.label);
-                        let _ = writeln!(stream, " Working on it");
+                        let mut spec = ColorSpec::new();
+                        spec.set_dimmed(true);
+                        let _ = stream.set_color(&spec);
+                        let _ = writeln!(stream, " · still working ({}s silent)", silent_secs);
+                        let _ = stream.reset();
                         last_display = Instant::now();
                     }
                 }
@@ -244,10 +249,18 @@ fn write_prefix(stream: &mut StandardStream, start: Instant, label: &str) {
     let mut spec = ColorSpec::new();
     spec.set_dimmed(true);
     let _ = stream.set_color(&spec);
-    let _ = write!(stream, "[{:02}:{:02}:{:02}]", h, m, s);
+    if h > 0 {
+        let _ = write!(stream, "[{:02}:{:02}:{:02}]", h, m, s);
+    } else {
+        let _ = write!(stream, "[{:02}:{:02}]", m, s);
+    }
     let _ = stream.reset();
     if !label.is_empty() {
+        let mut label_spec = ColorSpec::new();
+        label_spec.set_fg(Some(termcolor::Color::Magenta)).set_bold(true);
+        let _ = stream.set_color(&label_spec);
         let _ = write!(stream, " [{}]", label);
+        let _ = stream.reset();
     }
 }
 
